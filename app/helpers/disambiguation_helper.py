@@ -178,7 +178,7 @@ class DisambiguationHelper:
         
         if option_type == "customer":
             for i, opt in enumerate(options, 1):
-                result += f"{idx}. {opt['name']} ({opt['phone']})\n"
+                result += f"{i}. {opt['name']} ({opt['phone']})\n"
         else:  # recipe
             for i, opt in enumerate(options, 1):
                 result += f"{i}. {opt['name']}\n"
