@@ -27,7 +27,9 @@ from app.services import (
     ReportingService,
     LLMService,
     Intent,
-    IntentResult
+    IntentResult,
+    ConversationService,
+    ConversationState
 )
 from app.error_handler import ErrorHandler, format_error_for_telegram
 from app.config import settings
@@ -93,6 +95,7 @@ class TelegramBotListener:
             raise ValueError("TELEGRAM_BOT_TOKEN must be configured")
         
         self.llm_service = LLMService()
+        self.conversation_service = ConversationService()
         self.application = None
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -124,22 +127,36 @@ class TelegramBotListener:
                 
                 logger.info(f"Tenant resolved: {tenant_id}")
                 
-                # Detect intent using LLM
-                intent_result = await self.llm_service.detect_intent(text)
-                logger.info(f"Intent detected: {intent_result.intent} (confidence: {intent_result.confidence})")
+                # Check if we're in the middle of a conversation
+                conv_context = self.conversation_service.get_context(tenant_id, chat_id)
                 
-                # Check confidence
-                if not self.llm_service.is_confident(intent_result):
-                    clarification = self.llm_service.get_clarification_message(intent_result)
-                    await update.message.reply_text(clarification)
-                    return
-                
-                # Route to appropriate service based on intent
-                response_text = await self.route_intent(
-                    db=db,
-                    tenant_id=tenant_id,
-                    intent_result=intent_result
-                )
+                if conv_context.state != ConversationState.IDLE:
+                    # Handle conversation continuation
+                    response_text = await self.handle_conversation_continuation(
+                        db=db,
+                        tenant_id=tenant_id,
+                        chat_id=chat_id,
+                        text=text,
+                        conv_context=conv_context
+                    )
+                else:
+                    # New conversation - detect intent using LLM
+                    intent_result = await self.llm_service.detect_intent(text)
+                    logger.info(f"Intent detected: {intent_result.intent} (confidence: {intent_result.confidence})")
+                    
+                    # Check confidence
+                    if not self.llm_service.is_confident(intent_result):
+                        clarification = self.llm_service.get_clarification_message(intent_result)
+                        await update.message.reply_text(clarification)
+                        return
+                    
+                    # Route to appropriate service based on intent
+                    response_text = await self.route_intent(
+                        db=db,
+                        tenant_id=tenant_id,
+                        chat_id=chat_id,
+                        intent_result=intent_result
+                    )
                 
                 # Send response to user - try with Markdown first, fallback to plain text
                 try:
@@ -164,7 +181,46 @@ class TelegramBotListener:
             except Exception as send_error:
                 logger.error(f"Failed to send error message: {send_error}")
     
-    async def route_intent(self, db, tenant_id: UUID, intent_result: IntentResult) -> str:
+    async def handle_conversation_continuation(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        text: str,
+        conv_context
+    ) -> str:
+        """
+        Handle continuation of an ongoing conversation.
+        
+        Args:
+            db: Database session
+            tenant_id: UUID of the tenant
+            chat_id: Telegram chat ID
+            text: User's message text
+            conv_context: Current conversation context
+        
+        Returns:
+            str: Response message for the user
+        """
+        logger.info(f"Handling conversation continuation: state={conv_context.state}")
+        
+        # Handle different conversation states
+        if conv_context.state == ConversationState.AWAITING_CUSTOMER_PHONE:
+            return await self.handle_awaiting_customer_phone(db, tenant_id, chat_id, text, conv_context)
+        
+        elif conv_context.state == ConversationState.AWAITING_DELIVERY_DATE:
+            return await self.handle_awaiting_delivery_date(db, tenant_id, chat_id, text, conv_context)
+        
+        elif conv_context.state == ConversationState.AWAITING_RECIPE_DISAMBIGUATION:
+            return await self.handle_awaiting_recipe_disambiguation(db, tenant_id, chat_id, text, conv_context)
+        
+        else:
+            # Unknown state - reset and process as new message
+            self.conversation_service.reset_context(chat_id)
+            intent_result = await self.llm_service.detect_intent(text)
+            return await self.route_intent(db, tenant_id, chat_id, intent_result)
+    
+    async def route_intent(self, db, tenant_id: UUID, chat_id: str, intent_result: IntentResult) -> str:
         """
         Route intent to appropriate service and format response.
         

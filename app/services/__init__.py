@@ -14,6 +14,7 @@ from app.services.payment_service import PaymentService
 from app.services.reporting_service import ReportingService
 from app.services.audit_service import AuditService
 from app.services.llm_service import LLMService, Intent, IntentResult
+from app.services.conversation_service import ConversationService, ConversationState, ConversationContext
 
 __all__ = [
     "TenantService",
@@ -26,5 +27,8 @@ __all__ = [
     "AuditService",
     "LLMService",
     "Intent",
-    "IntentResult"
+    "IntentResult",
+    "ConversationService",
+    "ConversationState",
+    "ConversationContext",
 ]
