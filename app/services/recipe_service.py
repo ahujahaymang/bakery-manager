@@ -437,3 +437,38 @@ class RecipeService:
             Recipe.tenant_id == tenant_id,
             Recipe.recipe_id == recipe_id
         ).first()
+
+    def search_recipes(
+        self,
+        tenant_id: UUID,
+        search_term: str
+    ) -> List[Recipe]:
+        """
+        Search for recipes by name with fuzzy matching.
+        
+        Performs case-insensitive partial matching on recipe names.
+        
+        Args:
+            tenant_id: UUID of the tenant
+            search_term: Search term to match against recipe names
+        
+        Returns:
+            List[Recipe]: List of matching recipes
+        """
+        if not search_term or not search_term.strip():
+            return []
+        
+        search_term = search_term.strip().lower()
+        
+        # Get all recipes for tenant
+        all_recipes = self.db.query(Recipe).filter(
+            Recipe.tenant_id == tenant_id
+        ).all()
+        
+        # Filter recipes that contain the search term (case-insensitive)
+        matching_recipes = [
+            recipe for recipe in all_recipes
+            if search_term in recipe.name.lower()
+        ]
+        
+        return matching_recipes

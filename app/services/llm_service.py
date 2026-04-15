@@ -209,7 +209,7 @@ class LLMService:
 - mark_delivered: Mark order as delivered (needs: order_id)
 - upcoming_orders: View upcoming pending orders
 - unpaid_orders: View orders with unpaid balance
-- record_payment: Record a payment (needs: order_id, amount, method)
+- record_payment: Record a payment (needs: order_id OR customer_identifier, amount, method)
 - payment_history: View payment history (optional: start_date, end_date)
 - weekly_profit: Calculate weekly profit
 - unknown: Cannot determine intent

@@ -208,6 +208,9 @@ class TelegramBotListener:
         if conv_context.state == ConversationState.AWAITING_CUSTOMER_PHONE:
             return await self.handle_awaiting_customer_phone(db, tenant_id, chat_id, text, conv_context)
         
+        elif conv_context.state == ConversationState.AWAITING_CUSTOMER_DISAMBIGUATION:
+            return await self.handle_awaiting_customer_disambiguation(db, tenant_id, chat_id, text, conv_context)
+        
         elif conv_context.state == ConversationState.AWAITING_DELIVERY_DATE:
             return await self.handle_awaiting_delivery_date(db, tenant_id, chat_id, text, conv_context)
         
@@ -264,7 +267,7 @@ class TelegramBotListener:
             
             # Order operations
             elif intent == Intent.CREATE_ORDER:
-                return await self.handle_create_order(db, tenant_id, entities)
+                return await self.handle_create_order(db, tenant_id, entities, chat_id)
             elif intent == Intent.MARK_DELIVERED:
                 return await self.handle_mark_delivered(db, tenant_id, entities)
             elif intent == Intent.UPCOMING_ORDERS:
@@ -415,12 +418,37 @@ class TelegramBotListener:
         return f"💰 *Recipe Cost for '{recipe_name}':*\n\n*Ingredient Cost:* ₹{cost.ingredient_cost:.2f}\n*Packaging Cost:* ₹{cost.packaging_cost:.2f}\n*Unit Cost:* ₹{cost.unit_cost:.2f}"
     
     # Order handlers
-    async def handle_create_order(self, db, tenant_id: UUID, entities: dict) -> str:
+    async def handle_create_order(self, db, tenant_id: UUID, entities: dict, chat_id: str = None) -> str:
+        from app.services import RecipeService, CustomerService
+        
         service = OrderService(db)
+        recipe_service = RecipeService(db)
+        customer_service = CustomerService(db)
         
         # Check if delivery date is provided
         delivery_date_str = entities.get("delivery_date", "")
-        if not delivery_date_str:
+        if not delivery_date_str and chat_id:
+            # Store order data and set conversation state
+            items_data = []
+            for item_data in entities.get("items", []):
+                items_data.append({
+                    'recipe_name': item_data.get("recipe_name", ""),
+                    'quantity': int(item_data.get("quantity", 1)),
+                    'selling_price': float(item_data.get("selling_price", 0))
+                })
+            
+            order_data_dict = {
+                'customer_identifier': entities.get("customer_identifier", ""),
+                'items': items_data
+            }
+            
+            self.conversation_service.set_state(
+                chat_id=chat_id,
+                state=ConversationState.AWAITING_DELIVERY_DATE,
+                pending_action="create_order",
+                context_data={'order_data': order_data_dict}
+            )
+            
             customer_name = entities.get("customer_identifier", "")
             items_desc = ", ".join([f"{item.get('quantity', 1)} {item.get('recipe_name', '')}" 
                                    for item in entities.get("items", [])])
@@ -429,8 +457,57 @@ class TelegramBotListener:
                 f"*Customer:* {customer_name}\n"
                 f"*Items:* {items_desc}\n\n"
                 f"Please provide the delivery date.\n"
-                f"Example: \"Deliver on 2026-04-20\" or \"Deliver tomorrow\""
+                f"Example: \"tomorrow\", \"April 20\", or \"2026-04-20\""
             )
+        
+        # Parse delivery date
+        delivery_date = date.fromisoformat(delivery_date_str)
+        
+        # Check for customer disambiguation BEFORE creating order
+        customer_identifier = entities.get("customer_identifier", "")
+        customers = customer_service.get_customer(tenant_id, customer_identifier)
+        
+        if len(customers) == 0:
+            # Customer not found - will be handled by OrderService
+            pass
+        elif len(customers) > 1 and chat_id:
+            # Multiple customers match - ask for disambiguation
+            customer_options = [
+                {'name': c.name, 'phone': c.phone, 'id': str(c.customer_id)}
+                for c in customers
+            ]
+            
+            # Store order data in conversation context
+            items_data = []
+            for item_data in entities.get("items", []):
+                items_data.append({
+                    'recipe_name': item_data.get("recipe_name", ""),
+                    'quantity': int(item_data.get("quantity", 1)),
+                    'selling_price': float(item_data.get("selling_price", 0))
+                })
+            
+            order_data_dict = {
+                'customer_identifier': customer_identifier,
+                'delivery_date': delivery_date.isoformat(),
+                'items': items_data
+            }
+            
+            self.conversation_service.set_state(
+                chat_id=chat_id,
+                state=ConversationState.AWAITING_CUSTOMER_DISAMBIGUATION,
+                pending_action="create_order",
+                context_data={
+                    'customer_options': customer_options,
+                    'order_data': order_data_dict
+                }
+            )
+            
+            result = f"🤔 I found multiple customers named '*{customer_identifier}*':\n\n"
+            for idx, customer_dict in enumerate(customer_options, 1):
+                result += f"{idx}. {customer_dict['name']} ({customer_dict['phone']})\n"
+            result += f"\nWhich one? Reply with the number or phone number."
+            
+            return result
         
         # Parse order items
         items = []
@@ -441,8 +518,45 @@ class TelegramBotListener:
                 selling_price=Decimal(str(item_data.get("selling_price", 0)))
             ))
         
-        # Parse delivery date
-        delivery_date = date.fromisoformat(delivery_date_str)
+        # Check for ambiguous recipes before creating order
+        for i, item in enumerate(items):
+            matching_recipes = recipe_service.search_recipes(tenant_id, item.recipe_name)
+            
+            # If multiple recipes match, ask for disambiguation
+            if len(matching_recipes) > 1 and chat_id:
+                recipe_options = [{'name': r.name, 'id': str(r.recipe_id)} for r in matching_recipes]
+                
+                # Store order data in conversation context
+                order_data_dict = {
+                    'customer_identifier': entities.get("customer_identifier", ""),
+                    'delivery_date': delivery_date.isoformat(),
+                    'items': [
+                        {
+                            'recipe_name': it.recipe_name,
+                            'quantity': it.quantity,
+                            'selling_price': float(it.selling_price)
+                        }
+                        for it in items
+                    ]
+                }
+                
+                self.conversation_service.set_state(
+                    chat_id=chat_id,
+                    state=ConversationState.AWAITING_RECIPE_DISAMBIGUATION,
+                    pending_action="create_order",
+                    context_data={
+                        'recipe_options': recipe_options,
+                        'order_data': order_data_dict,
+                        'item_index': i
+                    }
+                )
+                
+                result = f"🤔 I found multiple recipes matching '*{item.recipe_name}*':\n\n"
+                for idx, recipe_dict in enumerate(recipe_options, 1):
+                    result += f"{idx}. {recipe_dict['name']}\n"
+                result += f"\nWhich one should I use? Reply with the number or full name."
+                
+                return result
         
         order_data = OrderCreate(
             customer_identifier=entities.get("customer_identifier", ""),
@@ -453,7 +567,7 @@ class TelegramBotListener:
         try:
             order = service.create_order(tenant_id, order_data)
             
-            result = f"✅ Order created!\n\n*Order ID:* `{order.order_id}`\n*Delivery Date:* {order.delivery_date}\n*Status:* {order.status}\n\n*Items:*\n"
+            result = f"✅ Order created!\n\n*Delivery Date:* {order.delivery_date}\n*Status:* {order.status}\n\n*Items:*\n"
             for item in items:
                 result += f"• {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}\n"
             
@@ -472,16 +586,41 @@ class TelegramBotListener:
         except ValueError as e:
             error_msg = str(e)
             # Check if it's a customer not found error
-            if "No customer found" in error_msg:
+            if "No customer found" in error_msg and chat_id:
                 customer_name = entities.get("customer_identifier", "")
+                
+                # Store order data in conversation context
+                order_data_dict = {
+                    'customer_identifier': customer_name,
+                    'delivery_date': delivery_date.isoformat(),
+                    'items': [
+                        {
+                            'recipe_name': it.recipe_name,
+                            'quantity': it.quantity,
+                            'selling_price': float(it.selling_price)
+                        }
+                        for it in items
+                    ]
+                }
+                
+                self.conversation_service.set_state(
+                    chat_id=chat_id,
+                    state=ConversationState.AWAITING_CUSTOMER_PHONE,
+                    pending_action="create_order",
+                    context_data={
+                        'customer_name': customer_name,
+                        'order_data': order_data_dict
+                    }
+                )
+                
                 return (
-                    f"❌ Customer '{customer_name}' not found.\n\n"
-                    f"Please add the customer first:\n"
-                    f"\"Add customer {customer_name} with phone [phone-number]\"\n\n"
-                    f"Then try creating the order again."
+                    f"❌ Customer '*{customer_name}*' not found.\n\n"
+                    f"Please provide {customer_name}'s phone number to add them as a customer.\n\n"
+                    f"Example: 9876543210"
                 )
             else:
-                raise
+                # Other error - just return the message
+                return f"❌ Error: {error_msg}"
     
     async def handle_mark_delivered(self, db, tenant_id: UUID, entities: dict) -> str:
         service = OrderService(db)
@@ -527,9 +666,14 @@ class TelegramBotListener:
     
     # Payment handlers
     async def handle_record_payment(self, db, tenant_id: UUID, entities: dict) -> str:
+        logger.info(f"Payment entities received: {entities}")
         service = PaymentService(db)
+        
+        # Handle both 'order_identifier' and 'customer_identifier' for backward compatibility
+        order_identifier = entities.get("order_identifier") or entities.get("customer_identifier", "")
+        
         payment_data = PaymentCreate(
-            order_identifier=entities.get("order_id", ""),
+            order_identifier=order_identifier,
             amount=Decimal(str(entities.get("amount", 0))),
             method=entities.get("method", "")
         )
@@ -575,6 +719,406 @@ class TelegramBotListener:
         result += f"*Gross Profit: ₹{report.gross_profit:.2f}*"
         
         return result
+    
+    # Conversation state handlers
+    async def handle_awaiting_customer_phone(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        text: str,
+        conv_context
+    ) -> str:
+        """
+        Handle phone number input for customer creation.
+        
+        Creates customer with stored name and phone, then resumes order creation.
+        """
+        from app.services import CustomerService, RecipeService
+        
+        # Extract phone number from text (simple extraction)
+        phone = ''.join(filter(str.isdigit, text))
+        
+        if not phone or len(phone) < 10:
+            return "Please provide a valid phone number (at least 10 digits)."
+        
+        # Get stored customer name from context
+        customer_name = conv_context.context_data.get('customer_name', '')
+        
+        if not customer_name:
+            # Context lost, reset
+            self.conversation_service.reset_context(chat_id)
+            return "Sorry, I lost track of the conversation. Please start over."
+        
+        # Create customer
+        customer_service = CustomerService(db)
+        try:
+            customer = customer_service.create_customer(tenant_id, customer_name, phone)
+            
+            # Get stored order data
+            order_data_dict = conv_context.context_data.get('order_data', {})
+            
+            # Resume order creation
+            order_service = OrderService(db)
+            
+            # Reconstruct order data
+            items = []
+            for item_dict in order_data_dict.get('items', []):
+                items.append(OrderItemCreate(
+                    recipe_name=item_dict['recipe_name'],
+                    quantity=item_dict['quantity'],
+                    selling_price=Decimal(str(item_dict['selling_price']))
+                ))
+            
+            order_data = OrderCreate(
+                customer_identifier=phone,  # Use phone now
+                delivery_date=date.fromisoformat(order_data_dict['delivery_date']),
+                items=items
+            )
+            
+            order = order_service.create_order(tenant_id, order_data)
+            
+            # Reset conversation state
+            self.conversation_service.reset_context(chat_id)
+            
+            # Format response
+            result = f"✅ Customer added: {customer.name} ({customer.phone})\n\n"
+            result += f"✅ Order created!\n\n*Delivery Date:* {order.delivery_date}\n*Status:* {order.status}\n\n*Items:*\n"
+            for item in items:
+                result += f"• {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}\n"
+            
+            # Check for missing recipes
+            if hasattr(order, '_missing_recipes') and order._missing_recipes:
+                result += f"\n⚠️ *Warning:* The following recipes don't exist:\n"
+                for recipe_name in order._missing_recipes:
+                    result += f"• {recipe_name}\n"
+                result += f"\n💡 Add the recipe for better tracking!"
+            
+            return result
+            
+        except ValueError as e:
+            # Reset conversation on error
+            self.conversation_service.reset_context(chat_id)
+            return f"❌ Error: {str(e)}\n\nPlease start over."
+    
+    async def handle_awaiting_delivery_date(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        text: str,
+        conv_context
+    ) -> str:
+        """
+        Handle delivery date input for order creation.
+        
+        Parses date from text and resumes order creation.
+        """
+        # Use LLM to parse the date
+        try:
+            # Simple date parsing - try to extract YYYY-MM-DD or use LLM
+            import re
+            date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', text)
+            
+            if date_match:
+                delivery_date = date.fromisoformat(date_match.group(0))
+            else:
+                # Use LLM to parse natural language date
+                intent_result = await self.llm_service.detect_intent(f"Order for delivery on {text}")
+                delivery_date_str = intent_result.entities.get('delivery_date')
+                
+                if not delivery_date_str:
+                    return f"I couldn't understand the date. Please provide it in a clear format like 'April 20' or '2026-04-20'."
+                
+                delivery_date = date.fromisoformat(delivery_date_str)
+            
+            # Validate date is not in the past
+            if delivery_date < date.today():
+                return f"❌ Delivery date cannot be in the past. Please provide a future date."
+            
+            # Get stored order data
+            order_data_dict = conv_context.context_data.get('order_data', {})
+            order_data_dict['delivery_date'] = delivery_date.isoformat()
+            
+            # Resume order creation
+            order_service = OrderService(db)
+            
+            items = []
+            for item_dict in order_data_dict.get('items', []):
+                items.append(OrderItemCreate(
+                    recipe_name=item_dict['recipe_name'],
+                    quantity=item_dict['quantity'],
+                    selling_price=Decimal(str(item_dict['selling_price']))
+                ))
+            
+            order_data = OrderCreate(
+                customer_identifier=order_data_dict['customer_identifier'],
+                delivery_date=delivery_date,
+                items=items
+            )
+            
+            try:
+                order = order_service.create_order(tenant_id, order_data)
+                
+                # Reset conversation state
+                self.conversation_service.reset_context(chat_id)
+                
+                # Format response
+                result = f"✅ Order created!\n\n*Delivery Date:* {order.delivery_date}\n*Status:* {order.status}\n\n*Items:*\n"
+                for item in items:
+                    result += f"• {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}\n"
+                
+                # Check for missing recipes
+                if hasattr(order, '_missing_recipes') and order._missing_recipes:
+                    result += f"\n⚠️ *Warning:* The following recipes don't exist:\n"
+                    for recipe_name in order._missing_recipes:
+                        result += f"• {recipe_name}\n"
+                    result += f"\n💡 Add the recipe for better tracking!"
+                
+                return result
+                
+            except ValueError as order_error:
+                # Check if it's a customer not found error
+                error_msg = str(order_error)
+                if "No customer found" in error_msg:
+                    customer_name = order_data_dict['customer_identifier']
+                    
+                    # Transition to AWAITING_CUSTOMER_PHONE state
+                    self.conversation_service.set_state(
+                        chat_id=chat_id,
+                        state=ConversationState.AWAITING_CUSTOMER_PHONE,
+                        pending_action="create_order",
+                        context_data={
+                            'customer_name': customer_name,
+                            'order_data': order_data_dict
+                        }
+                    )
+                    
+                    return (
+                        f"❌ Customer '*{customer_name}*' not found.\n\n"
+                        f"Please provide {customer_name}'s phone number to add them as a customer.\n\n"
+                        f"Example: 9876543210"
+                    )
+                elif "Multiple customers match" in error_msg:
+                    # Extract customer list from error message or query again
+                    from app.services import CustomerService
+                    customer_service = CustomerService(db)
+                    customer_name = order_data_dict['customer_identifier']
+                    customers = customer_service.get_customer(tenant_id, customer_name)
+                    
+                    customer_options = [
+                        {'name': c.name, 'phone': c.phone, 'id': str(c.customer_id)}
+                        for c in customers
+                    ]
+                    
+                    # Transition to AWAITING_CUSTOMER_DISAMBIGUATION state
+                    self.conversation_service.set_state(
+                        chat_id=chat_id,
+                        state=ConversationState.AWAITING_CUSTOMER_DISAMBIGUATION,
+                        pending_action="create_order",
+                        context_data={
+                            'customer_options': customer_options,
+                            'order_data': order_data_dict
+                        }
+                    )
+                    
+                    result = f"🤔 I found multiple customers named '*{customer_name}*':\n\n"
+                    for idx, customer_dict in enumerate(customer_options, 1):
+                        result += f"{idx}. {customer_dict['name']} ({customer_dict['phone']})\n"
+                    result += f"\nWhich one? Reply with the number or phone number."
+                    
+                    return result
+                else:
+                    # Other error - reset and return message
+                    self.conversation_service.reset_context(chat_id)
+                    return f"❌ Error: {error_msg}\n\nPlease start over."
+            
+        except Exception as e:
+            logger.error(f"Error parsing delivery date: {e}")
+            return f"I couldn't understand the date. Please provide it in a clear format like 'April 20' or '2026-04-20'."
+    
+    async def handle_awaiting_customer_disambiguation(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        text: str,
+        conv_context
+    ) -> str:
+        """
+        Handle customer selection from multiple matches.
+        
+        Parses user's choice and resumes order creation with selected customer.
+        """
+        from app.services import CustomerService
+        
+        # Get stored customer options
+        customer_options = conv_context.context_data.get('customer_options', [])
+        
+        if not customer_options:
+            # Context lost, reset
+            self.conversation_service.reset_context(chat_id)
+            return "Sorry, I lost track of the conversation. Please start over."
+        
+        # Parse user's choice (number or phone)
+        text_lower = text.strip().lower()
+        selected_customer = None
+        
+        # Try to parse as number
+        try:
+            choice_num = int(text_lower)
+            if 1 <= choice_num <= len(customer_options):
+                selected_customer = customer_options[choice_num - 1]
+        except ValueError:
+            # Not a number, try to match by phone
+            for customer_dict in customer_options:
+                if text_lower in customer_dict['phone'].lower():
+                    selected_customer = customer_dict
+                    break
+        
+        if not selected_customer:
+            # Invalid choice
+            result = "I didn't understand your choice. Please reply with:\n"
+            for i, customer_dict in enumerate(customer_options, 1):
+                result += f"{i}. {customer_dict['name']} ({customer_dict['phone']})\n"
+            return result
+        
+        # Get stored order data
+        order_data_dict = conv_context.context_data.get('order_data', {})
+        
+        # Update the customer identifier to use phone (unique)
+        order_data_dict['customer_identifier'] = selected_customer['phone']
+        
+        # Resume order creation
+        order_service = OrderService(db)
+        
+        items = []
+        for item_dict in order_data_dict.get('items', []):
+            items.append(OrderItemCreate(
+                recipe_name=item_dict['recipe_name'],
+                quantity=item_dict['quantity'],
+                selling_price=Decimal(str(item_dict['selling_price']))
+            ))
+        
+        order_data = OrderCreate(
+            customer_identifier=selected_customer['phone'],
+            delivery_date=date.fromisoformat(order_data_dict['delivery_date']),
+            items=items
+        )
+        
+        try:
+            order = order_service.create_order(tenant_id, order_data)
+            
+            # Reset conversation state
+            self.conversation_service.reset_context(chat_id)
+            
+            # Format response
+            result = f"✅ Order created for *{selected_customer['name']}* ({selected_customer['phone']})!\n\n*Delivery Date:* {order.delivery_date}\n*Status:* {order.status}\n\n*Items:*\n"
+            for item in items:
+                result += f"• {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}\n"
+            
+            # Check for missing recipes
+            if hasattr(order, '_missing_recipes') and order._missing_recipes:
+                result += f"\n⚠️ *Warning:* The following recipes don't exist:\n"
+                for recipe_name in order._missing_recipes:
+                    result += f"• {recipe_name}\n"
+                result += f"\n💡 Add the recipe for better tracking!"
+            
+            return result
+            
+        except ValueError as e:
+            # Reset conversation on error
+            self.conversation_service.reset_context(chat_id)
+            return f"❌ Error: {str(e)}\n\nPlease start over."
+    
+    async def handle_awaiting_recipe_disambiguation(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        text: str,
+        conv_context
+    ) -> str:
+        """
+        Handle recipe selection from multiple matches.
+        
+        Parses user's choice and resumes order creation with selected recipe.
+        """
+        from app.services import RecipeService
+        
+        # Get stored recipe options
+        recipe_options = conv_context.context_data.get('recipe_options', [])
+        
+        if not recipe_options:
+            # Context lost, reset
+            self.conversation_service.reset_context(chat_id)
+            return "Sorry, I lost track of the conversation. Please start over."
+        
+        # Parse user's choice (number or name)
+        text_lower = text.strip().lower()
+        selected_recipe = None
+        
+        # Try to parse as number
+        try:
+            choice_num = int(text_lower)
+            if 1 <= choice_num <= len(recipe_options):
+                selected_recipe = recipe_options[choice_num - 1]
+        except ValueError:
+            # Not a number, try to match by name
+            for recipe_dict in recipe_options:
+                if text_lower in recipe_dict['name'].lower():
+                    selected_recipe = recipe_dict
+                    break
+        
+        if not selected_recipe:
+            # Invalid choice
+            result = "I didn't understand your choice. Please reply with:\n"
+            for i, recipe_dict in enumerate(recipe_options, 1):
+                result += f"{i}. {recipe_dict['name']}\n"
+            return result
+        
+        # Get stored order data
+        order_data_dict = conv_context.context_data.get('order_data', {})
+        item_index = conv_context.context_data.get('item_index', 0)
+        
+        # Update the recipe name in the order data
+        if 'items' in order_data_dict and item_index < len(order_data_dict['items']):
+            order_data_dict['items'][item_index]['recipe_name'] = selected_recipe['name']
+        
+        # Resume order creation
+        order_service = OrderService(db)
+        
+        items = []
+        for item_dict in order_data_dict.get('items', []):
+            items.append(OrderItemCreate(
+                recipe_name=item_dict['recipe_name'],
+                quantity=item_dict['quantity'],
+                selling_price=Decimal(str(item_dict['selling_price']))
+            ))
+        
+        order_data = OrderCreate(
+            customer_identifier=order_data_dict['customer_identifier'],
+            delivery_date=date.fromisoformat(order_data_dict['delivery_date']),
+            items=items
+        )
+        
+        try:
+            order = order_service.create_order(tenant_id, order_data)
+            
+            # Reset conversation state
+            self.conversation_service.reset_context(chat_id)
+            
+            # Format response
+            result = f"✅ Order created with *{selected_recipe['name']}*!\n\n*Delivery Date:* {order.delivery_date}\n*Status:* {order.status}\n\n*Items:*\n"
+            for item in items:
+                result += f"• {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}\n"
+            
+            return result
+            
+        except ValueError as e:
+            # Reset conversation on error
+            self.conversation_service.reset_context(chat_id)
+            return f"❌ Error: {str(e)}\n\nPlease start over."
     
     async def start(self):
         """Start the bot in polling mode."""

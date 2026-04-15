@@ -19,6 +19,7 @@ class ConversationState(str, Enum):
     """Possible conversation states."""
     IDLE = "idle"
     AWAITING_CUSTOMER_PHONE = "awaiting_customer_phone"
+    AWAITING_CUSTOMER_DISAMBIGUATION = "awaiting_customer_disambiguation"
     AWAITING_DELIVERY_DATE = "awaiting_delivery_date"
     AWAITING_RECIPE_DISAMBIGUATION = "awaiting_recipe_disambiguation"
     AWAITING_CONFIRMATION = "awaiting_confirmation"

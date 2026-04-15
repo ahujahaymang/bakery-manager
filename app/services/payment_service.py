@@ -12,13 +12,13 @@ from datetime import date, datetime
 from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
-from app.models import Payment, Order, Customer
+from app.models import Payment, Order, Customer, OrderItem
 
 
 @dataclass
 class PaymentCreate:
     """Data class for creating a payment."""
-    order_identifier: str  # order_id as string
+    order_identifier: str  # order_id (UUID) or customer name/phone
     amount: Decimal
     method: str  # Cash, Paytm, Bank Transfer
 
@@ -104,21 +104,93 @@ class PaymentService:
             )
         
         # Retrieve order by identifier and tenant_id
+        # Try UUID first, then customer name/phone
+        order = None
         try:
             order_id = UUID(payment.order_identifier.strip())
+            order = self.db.query(Order).filter(
+                Order.order_id == order_id,
+                Order.tenant_id == tenant_id
+            ).first()
         except (ValueError, AttributeError):
-            raise ValueError(
-                f"Invalid order identifier format: {payment.order_identifier}"
-            )
-        
-        order = self.db.query(Order).filter(
-            Order.order_id == order_id,
-            Order.tenant_id == tenant_id
-        ).first()
+            # Not a UUID, try to find by customer name or phone
+            from app.services.customer_service import CustomerService
+            customer_service = CustomerService(self.db)
+            
+            customers = customer_service.get_customer(tenant_id, payment.order_identifier)
+            
+            if len(customers) == 0:
+                raise ValueError(
+                    f"No customer or order found matching '{payment.order_identifier}'. "
+                    "Please provide an order ID or customer name/phone."
+                )
+            elif len(customers) > 1:
+                customer_list = [f"{c.name} ({c.phone})" for c in customers]
+                raise ValueError(
+                    f"Multiple customers match '{payment.order_identifier}': {', '.join(customer_list)}. "
+                    "Please be more specific or provide the order ID."
+                )
+            
+            # Single customer found - get their most recent unpaid order
+            customer = customers[0]
+            
+            # Get unpaid orders for this customer
+            unpaid_orders = self.db.query(Order).filter(
+                Order.tenant_id == tenant_id,
+                Order.customer_id == customer.customer_id
+            ).all()
+            
+            # Filter to orders with outstanding balance
+            orders_with_balance = []
+            for ord in unpaid_orders:
+                # Calculate total order amount
+                order_items = self.db.query(OrderItem).filter(
+                    OrderItem.order_id == ord.order_id
+                ).all()
+                
+                total_amount = Decimal('0')
+                for item in order_items:
+                    total_amount += item.quantity * item.selling_price
+                
+                # Calculate amount paid
+                payments = self.db.query(Payment).filter(
+                    Payment.order_id == ord.order_id
+                ).all()
+                
+                amount_paid = Decimal('0')
+                for pmt in payments:
+                    amount_paid += pmt.amount
+                
+                if amount_paid < total_amount:
+                    orders_with_balance.append({
+                        'order': ord,
+                        'total': total_amount,
+                        'paid': amount_paid,
+                        'due': total_amount - amount_paid
+                    })
+            
+            if len(orders_with_balance) == 0:
+                raise ValueError(
+                    f"No unpaid orders found for {customer.name}. All orders are fully paid!"
+                )
+            elif len(orders_with_balance) > 1:
+                # Multiple unpaid orders - need disambiguation
+                order_list = []
+                for ord_info in orders_with_balance:
+                    order_list.append(
+                        f"Order {ord_info['order'].delivery_date} - Due: ₹{ord_info['due']}"
+                    )
+                raise ValueError(
+                    f"{customer.name} has multiple unpaid orders:\n" + "\n".join(order_list) +
+                    "\n\nPlease specify which order or provide the order ID."
+                )
+            
+            # Single unpaid order found
+            order = orders_with_balance[0]['order']
         
         if not order:
             raise ValueError(
-                f"Order not found. Please check the order ID."
+                f"Order not found. Please check the order ID or customer name."
             )
         
         # Create payment record
