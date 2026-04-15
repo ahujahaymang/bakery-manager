@@ -29,6 +29,8 @@ class Intent(str, Enum):
     ADD_RECIPE_COMPONENT = "add_recipe_component"
     CALCULATE_RECIPE_COST = "calculate_recipe_cost"
     CREATE_ORDER = "create_order"
+    CANCEL_ORDER = "cancel_order"
+    DELETE_ORDER = "delete_order"
     MARK_DELIVERED = "mark_delivered"
     UPCOMING_ORDERS = "upcoming_orders"
     UNPAID_ORDERS = "unpaid_orders"
@@ -201,23 +203,38 @@ class LLMService:
 - add_inventory: Add a new inventory item (needs: name, category, quantity, unit, cost_per_unit)
 - update_inventory: Update inventory quantity or cost (needs: name, quantity or cost_per_unit)
 - check_stock: Check stock level for an item (needs: name)
-- list_inventory: List all inventory items
+- list_inventory: List inventory items (optional: category filter - "ingredient" or "packaging")
 - create_recipe: Create a new recipe (needs: name, yield_per_batch)
 - add_recipe_component: Add ingredient/packaging to recipe (needs: recipe_name, item_name, quantity, component_type)
 - calculate_recipe_cost: Calculate recipe cost (needs: recipe_name)
 - create_order: Create a new order (needs: customer_identifier, delivery_date, items with recipe_name, quantity, selling_price)
+- cancel_order: Mark order as cancelled (customer cancelled, keep for analysis) (needs: order_id or customer_identifier with delivery_date)
+- delete_order: Permanently delete order (entered incorrectly) (needs: order_id or customer_identifier with delivery_date)
 - mark_delivered: Mark order as delivered (needs: order_id)
-- upcoming_orders: View upcoming pending orders
-- unpaid_orders: View orders with unpaid balance
-- record_payment: Record a payment (needs: order_id OR customer_identifier, amount, method)
+- upcoming_orders: View upcoming pending orders (optional: filter - "paid", "unpaid", "delivered", "pending")
+- unpaid_orders: View orders with unpaid balance (same as upcoming_orders with filter="unpaid")
+- record_payment: Record a payment (needs: order_identifier (can be order_id UUID or customer name/phone), amount, method)
 - payment_history: View payment history (optional: start_date, end_date)
 - weekly_profit: Calculate weekly profit
 - unknown: Cannot determine intent
 
+**Natural Language Understanding:**
+- "show paid orders" → upcoming_orders with filter="paid"
+- "show unpaid orders" → unpaid_orders OR upcoming_orders with filter="unpaid"
+- "show inventory" → list_inventory (all items)
+- "show ingredients" → list_inventory with category="ingredient"
+- "show pantry" → list_inventory with category="ingredient"
+- "show packaging" → list_inventory with category="packaging"
+- "order cancelled" or "customer cancelled" → cancel_order (marks as cancelled, keeps in DB)
+- "delete order" or "remove order" → delete_order (permanently deletes, for mistakes)
+- "Priya's order got cancelled" → cancel_order with customer_identifier
+- "delete order for Priya tomorrow" → delete_order with customer_identifier and delivery_date
+
 **Entity Types:**
 - name: Customer or item name (string)
 - phone: Phone number (string with digits)
-- category: "ingredient" or "packaging"
+- category: "ingredient" or "packaging" (for inventory filtering)
+- filter: Order status filter - "paid", "unpaid", "delivered", "pending"
 - quantity: Numeric value (can be decimal)
 - unit: "kg", "g", "litre", "ml", or "pcs"
 - cost_per_unit: Numeric value (decimal)
@@ -229,6 +246,7 @@ class LLMService:
 - delivery_date: Date in YYYY-MM-DD format
 - items: Array of order items with recipe_name, quantity, selling_price
 - order_id: UUID string
+- order_identifier: Order ID (UUID) or customer name/phone for finding unpaid orders
 - amount: Numeric value (decimal)
 - method: "Cash", "Paytm", or "Bank Transfer"
 - start_date: Date in YYYY-MM-DD format
@@ -289,12 +307,79 @@ User: "Create order for Priya, 2 chocolate cakes at 500 each, deliver tomorrow"
 
 Note: "tomorrow" was converted to the actual date based on current date.
 
+User: "Priya order 10 cupcakes at 50 each, deliver April 20"
+{{
+  "intent": "create_order",
+  "entities": {{
+    "customer_identifier": "Priya",
+    "items": [
+      {{
+        "recipe_name": "cupcakes",
+        "quantity": 10,
+        "selling_price": 50
+      }}
+    ],
+    "delivery_date": "2026-04-20"
+  }},
+  "confidence": 0.85
+}}
+
+Note: "April 20" was parsed as "2026-04-20" using the current year.
+
 User: "Show me this week's profit"
 {{
   "intent": "weekly_profit",
   "entities": {{}},
   "confidence": 0.95
 }}
+
+User: "Show paid orders"
+{{
+  "intent": "upcoming_orders",
+  "entities": {{
+    "filter": "paid"
+  }},
+  "confidence": 0.9
+}}
+
+User: "Show ingredients" OR "Show pantry"
+{{
+  "intent": "list_inventory",
+  "entities": {{
+    "category": "ingredient"
+  }},
+  "confidence": 0.95
+}}
+
+User: "Show packaging materials"
+{{
+  "intent": "list_inventory",
+  "entities": {{
+    "category": "packaging"
+  }},
+  "confidence": 0.95
+}}
+
+User: "Delete order for Priya tomorrow"
+{{
+  "intent": "delete_order",
+  "entities": {{
+    "customer_identifier": "Priya",
+    "delivery_date": "2026-04-16"
+  }},
+  "confidence": 0.85
+}}
+
+User: "Cancel Raj's order" OR "Raj's order got cancelled"
+{{
+  "intent": "cancel_order",
+  "entities": {{
+    "customer_identifier": "Raj"
+  }},
+  "confidence": 0.85
+}}
+
+Note: cancel_order marks as cancelled (keeps in DB for analysis), delete_order permanently removes (for data entry mistakes).
 
 **Important Rules:**
 1. Always return valid JSON
@@ -304,6 +389,7 @@ User: "Show me this week's profit"
 5. Normalize entity values (lowercase for categories, proper format for dates)
 6. **CRITICAL:** For dates like "tomorrow", "next week", "today", calculate the actual date in YYYY-MM-DD format using the current date provided above
 7. Infer missing information when obvious (e.g., "flour" is likely an ingredient)
+8. **Natural Language Flexibility:** Understand variations like "show paid orders" (upcoming_orders with filter="paid"), "show ingredients" (list_inventory with category="ingredient")
 
 Now classify the following user message:"""
     
