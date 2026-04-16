@@ -171,16 +171,17 @@ class RequestHandler:
         logger.info(f"Inventory filter: {category_filter}, entities: {entities}")
         logger.info(f"Items by category: {items_by_category}")
         
-        if not items_by_category.get("ingredients") and not items_by_category.get("packaging"):
+        # Check if there are any items (using correct keys: "ingredient" and "packaging")
+        if not items_by_category.get("ingredient") and not items_by_category.get("packaging"):
             return "📦 No inventory items found"
         
         result = "📦 *Inventory:*\n\n"
         
         # Show only requested category or all
         if not category_filter or category_filter == "ingredient":
-            if items_by_category.get("ingredients"):
+            if items_by_category.get("ingredient"):
                 result += "*Ingredients:*\n"
-                for item in items_by_category["ingredients"]:
+                for item in items_by_category["ingredient"]:
                     result += f"• {item.name}: {item.quantity} {item.unit} @ ₹{item.cost_per_unit}/{item.unit}\n"
                 result += "\n"
         
