@@ -168,10 +168,10 @@ class OrderService:
                     f"Invalid selling price value for recipe '{item.recipe_name}': {item.selling_price}"
                 )
             
-            # Try to retrieve recipe (but allow None)
+            # Try to retrieve recipe (case-insensitive)
             recipe = self.db.query(Recipe).filter(
                 Recipe.tenant_id == tenant_id,
-                Recipe.name == item.recipe_name.strip()
+                func.lower(Recipe.name) == item.recipe_name.strip().lower()
             ).first()
             
             if not recipe:

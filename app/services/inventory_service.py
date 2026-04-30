@@ -137,15 +137,15 @@ class InventoryService:
                 raise
             raise ValueError(f"Invalid cost per unit value: {cost_per_unit}")
         
-        # Check for duplicate name
+        # Check for duplicate name (case-insensitive)
         existing_item = self.db.query(InventoryItem).filter(
             InventoryItem.tenant_id == tenant_id,
-            InventoryItem.name == name
+            func.lower(InventoryItem.name) == name.lower()
         ).first()
         
         if existing_item:
             raise ValueError(
-                f"An inventory item with name '{name}' already exists"
+                f"An inventory item with name '{existing_item.name}' already exists"
             )
         
         # Create inventory item
@@ -167,11 +167,11 @@ class InventoryService:
             # Handle race condition
             existing = self.db.query(InventoryItem).filter(
                 InventoryItem.tenant_id == tenant_id,
-                InventoryItem.name == name
+                func.lower(InventoryItem.name) == name.lower()
             ).first()
             if existing:
                 raise ValueError(
-                    f"An inventory item with name '{name}' already exists"
+                    f"An inventory item with name '{existing.name}' already exists"
                 )
             raise
     
@@ -211,10 +211,10 @@ class InventoryService:
         
         name = name.strip()
         
-        # Retrieve existing item
+        # Retrieve existing item (case-insensitive)
         item = self.db.query(InventoryItem).filter(
             InventoryItem.tenant_id == tenant_id,
-            InventoryItem.name == name
+            func.lower(InventoryItem.name) == name.lower()
         ).first()
         
         if not item:
@@ -297,7 +297,7 @@ class InventoryService:
         
         return self.db.query(InventoryItem).filter(
             InventoryItem.tenant_id == tenant_id,
-            InventoryItem.name == name.strip()
+            func.lower(InventoryItem.name) == name.strip().lower()
         ).first()
     
     def list_items(

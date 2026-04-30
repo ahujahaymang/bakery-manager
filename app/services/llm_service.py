@@ -28,6 +28,12 @@ class Intent(str, Enum):
     CREATE_RECIPE = "create_recipe"
     ADD_RECIPE_COMPONENT = "add_recipe_component"
     CALCULATE_RECIPE_COST = "calculate_recipe_cost"
+    LIST_RECIPES = "list_recipes"
+    GET_RECIPE = "get_recipe"
+    UPDATE_RECIPE = "update_recipe"
+    REMOVE_RECIPE_COMPONENT = "remove_recipe_component"
+    UPDATE_RECIPE_COMPONENT = "update_recipe_component"
+    DELETE_RECIPE = "delete_recipe"
     CREATE_ORDER = "create_order"
     CANCEL_ORDER = "cancel_order"
     DELETE_ORDER = "delete_order"
@@ -207,6 +213,12 @@ class LLMService:
 - create_recipe: Create a new recipe (needs: name, yield_per_batch)
 - add_recipe_component: Add ingredient/packaging to recipe (needs: recipe_name, item_name, quantity, component_type)
 - calculate_recipe_cost: Calculate recipe cost (needs: recipe_name)
+- list_recipes: List all recipes
+- get_recipe: View a specific recipe with all components (needs: recipe_name)
+- update_recipe: Rename a recipe or change its yield (needs: recipe_name, optional: new_name, new_yield)
+- remove_recipe_component: Remove an ingredient or packaging from a recipe (needs: recipe_name, item_name)
+- update_recipe_component: Change the quantity of a component in a recipe (needs: recipe_name, item_name, quantity)
+- delete_recipe: Delete a recipe entirely (needs: recipe_name)
 - create_order: Create a new order (needs: customer_identifier, delivery_date, items with recipe_name, quantity, selling_price)
 - cancel_order: Mark order as cancelled (customer cancelled, keep for analysis) (needs: order_id or customer_identifier with delivery_date)
 - delete_order: Permanently delete order (entered incorrectly) (needs: order_id or customer_identifier with delivery_date)
@@ -225,6 +237,13 @@ class LLMService:
 - "show ingredients" → list_inventory with category="ingredient"
 - "show pantry" → list_inventory with category="ingredient"
 - "show packaging" → list_inventory with category="packaging"
+- "show recipes" or "list recipes" → list_recipes
+- "show recipe X" or "view recipe X" → get_recipe with recipe_name
+- "rename recipe X to Y" → update_recipe with recipe_name and new_name
+- "change yield of X to 12" → update_recipe with recipe_name and new_yield
+- "remove flour from X recipe" → remove_recipe_component with recipe_name and item_name
+- "update flour to 200g in X recipe" → update_recipe_component with recipe_name, item_name, quantity
+- "delete recipe X" → delete_recipe with recipe_name
 - "order cancelled" or "customer cancelled" → cancel_order (marks as cancelled, keeps in DB)
 - "delete order" or "remove order" → delete_order (permanently deletes, for mistakes)
 - "Priya's order got cancelled" → cancel_order with customer_identifier
@@ -241,6 +260,8 @@ class LLMService:
 - recipe_name: Recipe name (string)
 - item_name: Inventory item name (string)
 - yield_per_batch: Integer value
+- new_name: New name when renaming (string)
+- new_yield: New yield per batch when updating (integer)
 - component_type: "ingredient" or "packaging"
 - customer_identifier: Name or phone for customer lookup
 - delivery_date: Date in YYYY-MM-DD format
@@ -431,6 +452,126 @@ Now classify the following user message:"""
                 f"I think you want to {result.intent.value.replace('_', ' ')}, "
                 "but I'm not completely sure. Could you please provide more details?"
             )
+    
+    async def extract_structured_data_from_image(self, prompt: str, image_b64: str) -> Dict[str, Any]:
+        """
+        Extract structured data from an image using GPT-4o Vision.
+        
+        Sends the image directly to GPT-4o which handles handwriting,
+        printed text, and screenshots natively.
+        
+        Args:
+            prompt: Extraction instructions and JSON schema
+            image_b64: Base64-encoded image string
+        
+        Returns:
+            Dict with extracted data
+        
+        Raises:
+            ValueError: If LLM response cannot be parsed
+        """
+        try:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_b64}",
+                                "detail": "auto"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
+            
+            response = await self.llm_client.call_llm(
+                messages=messages,
+                temperature=0.2,
+                max_tokens=1500
+            )
+            
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            if not content:
+                raise ValueError("Empty response from LLM")
+            
+            # Handle markdown code blocks
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+            
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse vision response as JSON: {e}")
+                logger.debug(f"Vision response: {content}")
+                raise ValueError(f"Failed to parse image data: {str(e)}")
+        
+        except Exception as e:
+            logger.error(f"Error in vision extraction: {e}", exc_info=True)
+            raise ValueError(f"Failed to process image: {str(e)}")
+    
+    async def extract_structured_data(self, prompt: str) -> Dict[str, Any]:
+        """
+        Extract structured data from text using LLM.
+        
+        Used by ImageService to parse OCR text into structured JSON.
+        
+        Args:
+            prompt: Prompt with text to extract and JSON schema
+        
+        Returns:
+            Dict with extracted data
+        
+        Raises:
+            ValueError: If LLM response cannot be parsed
+        """
+        try:
+            response = await self.llm_client.call_llm(
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,  # Low temperature for consistent extraction
+                max_tokens=1000
+            )
+            
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            if not content:
+                raise ValueError("Empty response from LLM")
+            
+            # Handle markdown code blocks
+            content = content.strip()
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+            
+            # Parse JSON
+            try:
+                return json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse LLM response as JSON: {e}")
+                logger.debug(f"LLM response content: {content}")
+                raise ValueError(f"Failed to parse structured data: {str(e)}")
+        
+        except Exception as e:
+            logger.error(f"Error extracting structured data: {e}", exc_info=True)
+            raise ValueError(f"Failed to extract structured data: {str(e)}")
     
     async def close(self):
         """Close the LLM client connection."""

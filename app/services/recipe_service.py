@@ -11,6 +11,7 @@ from decimal import Decimal
 from dataclasses import dataclass
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 
 from app.models import Recipe, RecipeComponent, InventoryItem
 
@@ -89,15 +90,15 @@ class RecipeService:
                 raise
             raise ValueError(f"Invalid yield per batch value: {yield_per_batch}")
         
-        # Check for duplicate name
+        # Check for duplicate name (case-insensitive)
         existing_recipe = self.db.query(Recipe).filter(
             Recipe.tenant_id == tenant_id,
-            Recipe.name == name
+            func.lower(Recipe.name) == name.lower()
         ).first()
         
         if existing_recipe:
             raise ValueError(
-                f"A recipe with name '{name}' already exists"
+                f"A recipe with name '{existing_recipe.name}' already exists"
             )
         
         # Create recipe
@@ -116,11 +117,11 @@ class RecipeService:
             # Handle race condition
             existing = self.db.query(Recipe).filter(
                 Recipe.tenant_id == tenant_id,
-                Recipe.name == name
+                func.lower(Recipe.name) == name.lower()
             ).first()
             if existing:
                 raise ValueError(
-                    f"A recipe with name '{name}' already exists"
+                    f"A recipe with name '{existing.name}' already exists"
                 )
             raise
     
@@ -192,19 +193,19 @@ class RecipeService:
                 raise
             raise ValueError(f"Invalid quantity value: {quantity}")
         
-        # Retrieve recipe
+        # Retrieve recipe (case-insensitive)
         recipe = self.db.query(Recipe).filter(
             Recipe.tenant_id == tenant_id,
-            Recipe.name == recipe_name
+            func.lower(Recipe.name) == recipe_name.lower()
         ).first()
         
         if not recipe:
             raise ValueError(f"Recipe '{recipe_name}' not found")
         
-        # Validate inventory item exists
+        # Validate inventory item exists (case-insensitive)
         item = self.db.query(InventoryItem).filter(
             InventoryItem.tenant_id == tenant_id,
-            InventoryItem.name == item_name
+            func.lower(InventoryItem.name) == item_name.lower()
         ).first()
         
         if not item:
@@ -258,10 +259,10 @@ class RecipeService:
         
         recipe_name = recipe_name.strip()
         
-        # Retrieve recipe
+        # Retrieve recipe (case-insensitive)
         recipe = self.db.query(Recipe).filter(
             Recipe.tenant_id == tenant_id,
-            Recipe.name == recipe_name
+            func.lower(Recipe.name) == recipe_name.lower()
         ).first()
         
         if not recipe:
@@ -331,10 +332,10 @@ class RecipeService:
         
         recipe_name = recipe_name.strip()
         
-        # Retrieve recipe
+        # Retrieve recipe (case-insensitive)
         recipe = self.db.query(Recipe).filter(
             Recipe.tenant_id == tenant_id,
-            Recipe.name == recipe_name
+            func.lower(Recipe.name) == recipe_name.lower()
         ).first()
         
         if not recipe:
@@ -415,7 +416,7 @@ class RecipeService:
         
         return self.db.query(Recipe).filter(
             Recipe.tenant_id == tenant_id,
-            Recipe.name == recipe_name.strip()
+            func.lower(Recipe.name) == recipe_name.strip().lower()
         ).first()
     
     def get_recipe_by_id(
@@ -437,6 +438,238 @@ class RecipeService:
             Recipe.tenant_id == tenant_id,
             Recipe.recipe_id == recipe_id
         ).first()
+
+    def list_recipes(self, tenant_id: UUID) -> List[Recipe]:
+        """
+        List all recipes for a tenant.
+
+        Args:
+            tenant_id: UUID of the tenant
+
+        Returns:
+            List[Recipe]: All recipes for the tenant
+        """
+        return self.db.query(Recipe).filter(
+            Recipe.tenant_id == tenant_id
+        ).order_by(Recipe.name).all()
+
+    def get_recipe_with_components(
+        self,
+        tenant_id: UUID,
+        recipe_name: str
+    ) -> Optional[Dict]:
+        """
+        Get a recipe with all its components as a dict.
+
+        Args:
+            tenant_id: UUID of the tenant
+            recipe_name: Name of the recipe
+
+        Returns:
+            Dict with recipe and components, or None if not found
+        """
+        recipe = self.get_recipe(tenant_id, recipe_name)
+        if not recipe:
+            return None
+
+        components = self.db.query(RecipeComponent, InventoryItem).join(
+            InventoryItem,
+            RecipeComponent.item_id == InventoryItem.item_id
+        ).filter(
+            RecipeComponent.recipe_id == recipe.recipe_id,
+            InventoryItem.tenant_id == tenant_id
+        ).all()
+
+        ingredients = []
+        packaging = []
+        for component, item in components:
+            entry = {
+                'component_id': component.component_id,
+                'item_name': item.name,
+                'quantity': component.quantity,
+                'unit': item.unit,
+                'type': component.type
+            }
+            if component.type == 'ingredient':
+                ingredients.append(entry)
+            else:
+                packaging.append(entry)
+
+        return {
+            'recipe_id': recipe.recipe_id,
+            'name': recipe.name,
+            'yield_per_batch': recipe.yield_per_batch,
+            'ingredients': ingredients,
+            'packaging': packaging
+        }
+
+    def update_recipe(
+        self,
+        tenant_id: UUID,
+        recipe_name: str,
+        new_name: Optional[str] = None,
+        new_yield: Optional[int] = None
+    ) -> Recipe:
+        """
+        Update recipe name or yield.
+
+        Args:
+            tenant_id: UUID of the tenant
+            recipe_name: Current recipe name
+            new_name: New name (optional)
+            new_yield: New yield per batch (optional)
+
+        Returns:
+            Recipe: Updated recipe
+
+        Raises:
+            ValueError: If recipe not found or validation fails
+        """
+        recipe = self.get_recipe(tenant_id, recipe_name)
+        if not recipe:
+            raise ValueError(f"Recipe '{recipe_name}' not found")
+
+        if new_name is not None:
+            new_name = new_name.strip()
+            if not new_name:
+                raise ValueError("Recipe name cannot be empty")
+            # Check for duplicate
+            existing = self.get_recipe(tenant_id, new_name)
+            if existing and existing.recipe_id != recipe.recipe_id:
+                raise ValueError(f"A recipe named '{new_name}' already exists")
+            recipe.name = new_name
+
+        if new_yield is not None:
+            new_yield = int(new_yield)
+            if new_yield <= 0:
+                raise ValueError("Yield per batch must be a positive integer")
+            recipe.yield_per_batch = new_yield
+
+        self.db.commit()
+        self.db.refresh(recipe)
+        return recipe
+
+    def remove_component(
+        self,
+        tenant_id: UUID,
+        recipe_name: str,
+        item_name: str
+    ) -> bool:
+        """
+        Remove a component from a recipe.
+
+        Args:
+            tenant_id: UUID of the tenant
+            recipe_name: Name of the recipe
+            item_name: Name of the inventory item to remove
+
+        Returns:
+            bool: True if removed, False if not found
+
+        Raises:
+            ValueError: If recipe not found
+        """
+        recipe = self.get_recipe(tenant_id, recipe_name)
+        if not recipe:
+            raise ValueError(f"Recipe '{recipe_name}' not found")
+
+        item = self.db.query(InventoryItem).filter(
+            InventoryItem.tenant_id == tenant_id,
+            func.lower(InventoryItem.name) == item_name.strip().lower()
+        ).first()
+
+        if not item:
+            raise ValueError(f"Inventory item '{item_name}' not found")
+
+        component = self.db.query(RecipeComponent).filter(
+            RecipeComponent.recipe_id == recipe.recipe_id,
+            RecipeComponent.item_id == item.item_id
+        ).first()
+
+        if not component:
+            return False
+
+        self.db.delete(component)
+        self.db.commit()
+        return True
+
+    def update_component_quantity(
+        self,
+        tenant_id: UUID,
+        recipe_name: str,
+        item_name: str,
+        new_quantity: Decimal
+    ) -> RecipeComponent:
+        """
+        Update the quantity of a component in a recipe.
+
+        Args:
+            tenant_id: UUID of the tenant
+            recipe_name: Name of the recipe
+            item_name: Name of the inventory item
+            new_quantity: New quantity
+
+        Returns:
+            RecipeComponent: Updated component
+
+        Raises:
+            ValueError: If recipe, item, or component not found
+        """
+        recipe = self.get_recipe(tenant_id, recipe_name)
+        if not recipe:
+            raise ValueError(f"Recipe '{recipe_name}' not found")
+
+        item = self.db.query(InventoryItem).filter(
+            InventoryItem.tenant_id == tenant_id,
+            func.lower(InventoryItem.name) == item_name.strip().lower()
+        ).first()
+
+        if not item:
+            raise ValueError(f"Inventory item '{item_name}' not found")
+
+        component = self.db.query(RecipeComponent).filter(
+            RecipeComponent.recipe_id == recipe.recipe_id,
+            RecipeComponent.item_id == item.item_id
+        ).first()
+
+        if not component:
+            raise ValueError(f"'{item_name}' is not a component of recipe '{recipe_name}'")
+
+        new_quantity = Decimal(str(new_quantity))
+        if new_quantity <= 0:
+            raise ValueError("Quantity must be positive")
+
+        component.quantity = new_quantity
+        self.db.commit()
+        self.db.refresh(component)
+        return component
+
+    def delete_recipe(self, tenant_id: UUID, recipe_name: str) -> bool:
+        """
+        Delete a recipe and all its components.
+
+        Args:
+            tenant_id: UUID of the tenant
+            recipe_name: Name of the recipe
+
+        Returns:
+            bool: True if deleted
+
+        Raises:
+            ValueError: If recipe not found
+        """
+        recipe = self.get_recipe(tenant_id, recipe_name)
+        if not recipe:
+            raise ValueError(f"Recipe '{recipe_name}' not found")
+
+        # Delete components first (FK constraint)
+        self.db.query(RecipeComponent).filter(
+            RecipeComponent.recipe_id == recipe.recipe_id
+        ).delete()
+
+        self.db.delete(recipe)
+        self.db.commit()
+        return True
 
     def search_recipes(
         self,

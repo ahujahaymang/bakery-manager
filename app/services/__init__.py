@@ -15,6 +15,9 @@ from app.services.reporting_service import ReportingService
 from app.services.audit_service import AuditService
 from app.services.llm_service import LLMService, Intent, IntentResult
 from app.services.conversation_service import ConversationService, ConversationState, ConversationContext
+from app.services.image_service import ImageService
+from app.services.agent_service import AgentService
+from app.services.tool_executor import ToolExecutor
 
 __all__ = [
     "TenantService",
@@ -31,4 +34,7 @@ __all__ = [
     "ConversationService",
     "ConversationState",
     "ConversationContext",
+    "ImageService",
+    "AgentService",
+    "ToolExecutor",
 ]
