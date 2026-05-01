@@ -6,13 +6,75 @@ including tenants, customers, inventory, recipes, orders, payments, and audit lo
 All models include tenant_id for data isolation.
 """
 
-from sqlalchemy import Column, String, Integer, Date, DateTime, ForeignKey, UniqueConstraint, Numeric
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy import Column, String, Integer, Date, DateTime, ForeignKey, UniqueConstraint, Numeric, Text
+from sqlalchemy.types import TypeDecorator
 from sqlalchemy.orm import relationship
 import uuid
+import json
 from datetime import datetime
 
 from app.database import Base
+from app.config import settings
+
+
+# ── Portable UUID type ────────────────────────────────────────────────────────
+# PostgreSQL: native UUID column
+# SQLite: stored as VARCHAR(36) string
+
+class PortableUUID(TypeDecorator):
+    """UUID stored natively on Postgres, as VARCHAR(36) on SQLite."""
+    impl = String(36)
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+            return dialect.type_descriptor(PG_UUID(as_uuid=True))
+        return dialect.type_descriptor(String(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == 'postgresql':
+            return value  # psycopg2 handles UUID objects natively
+        return str(value)  # SQLite: store as string
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, uuid.UUID):
+            return value
+        return uuid.UUID(str(value))
+
+
+# ── Portable JSON type ────────────────────────────────────────────────────────
+# PostgreSQL: native JSONB
+# SQLite: stored as TEXT
+
+class PortableJSON(TypeDecorator):
+    """JSONB on Postgres, TEXT on SQLite."""
+    impl = Text
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            from sqlalchemy.dialects.postgresql import JSONB
+            return dialect.type_descriptor(JSONB())
+        return dialect.type_descriptor(Text())
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == 'postgresql':
+            return value
+        return json.dumps(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if dialect.name == 'postgresql' and not isinstance(value, str):
+            return value  # already parsed by psycopg2
+        return json.loads(value)
 
 
 class Tenant(Base):
@@ -22,7 +84,7 @@ class Tenant(Base):
     """
     __tablename__ = "tenants"
     
-    tenant_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
     chat_id = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -43,8 +105,8 @@ class Customer(Base):
     """
     __tablename__ = "customers"
     
-    customer_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    customer_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     phone = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -66,8 +128,8 @@ class InventoryItem(Base):
     """
     __tablename__ = "inventory_items"
     
-    item_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    item_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     category = Column(String, nullable=False)  # "ingredient" or "packaging"
     quantity = Column(Numeric(10, 2), nullable=False)
@@ -92,8 +154,8 @@ class Recipe(Base):
     """
     __tablename__ = "recipes"
     
-    recipe_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    recipe_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     yield_per_batch = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -116,9 +178,9 @@ class RecipeComponent(Base):
     """
     __tablename__ = "recipe_components"
     
-    component_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    recipe_id = Column(UUID(as_uuid=True), ForeignKey("recipes.recipe_id"), nullable=False, index=True)
-    item_id = Column(UUID(as_uuid=True), ForeignKey("inventory_items.item_id"), nullable=False, index=True)
+    component_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    recipe_id = Column(PortableUUID(), ForeignKey("recipes.recipe_id"), nullable=False, index=True)
+    item_id = Column(PortableUUID(), ForeignKey("inventory_items.item_id"), nullable=False, index=True)
     quantity = Column(Numeric(10, 2), nullable=False)
     type = Column(String, nullable=False)  # "ingredient" or "packaging"
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -135,9 +197,9 @@ class Order(Base):
     """
     __tablename__ = "orders"
     
-    order_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
-    customer_id = Column(UUID(as_uuid=True), ForeignKey("customers.customer_id"), nullable=False, index=True)
+    order_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    customer_id = Column(PortableUUID(), ForeignKey("customers.customer_id"), nullable=False, index=True)
     delivery_date = Column(Date, nullable=False)
     status = Column(String, nullable=False, default="pending")  # "pending" or "delivered"
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -158,9 +220,9 @@ class OrderItem(Base):
     """
     __tablename__ = "order_items"
     
-    order_item_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id"), nullable=False, index=True)
-    recipe_id = Column(UUID(as_uuid=True), ForeignKey("recipes.recipe_id"), nullable=True, index=True)
+    order_item_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    order_id = Column(PortableUUID(), ForeignKey("orders.order_id"), nullable=False, index=True)
+    recipe_id = Column(PortableUUID(), ForeignKey("recipes.recipe_id"), nullable=True, index=True)
     recipe_name = Column(String(255), nullable=False)  # Store name for display
     quantity = Column(Integer, nullable=False)
     selling_price = Column(Numeric(10, 2), nullable=False)
@@ -178,9 +240,9 @@ class Payment(Base):
     """
     __tablename__ = "payments"
     
-    payment_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
-    order_id = Column(UUID(as_uuid=True), ForeignKey("orders.order_id"), nullable=False, index=True)
+    payment_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    order_id = Column(PortableUUID(), ForeignKey("orders.order_id"), nullable=False, index=True)
     amount = Column(Numeric(10, 2), nullable=False)
     method = Column(String, nullable=False)  # "Cash", "Paytm", "Bank Transfer"
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -198,13 +260,13 @@ class AuditLog(Base):
     """
     __tablename__ = "audit_logs"
     
-    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    log_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     table_name = Column(String, nullable=False)
-    record_id = Column(UUID(as_uuid=True), nullable=False)
+    record_id = Column(PortableUUID(), nullable=False)
     operation_type = Column(String, nullable=False)  # "UPDATE" or "DELETE"
-    old_values = Column(JSONB)
-    new_values = Column(JSONB)
+    old_values = Column(PortableJSON())
+    new_values = Column(PortableJSON())
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships

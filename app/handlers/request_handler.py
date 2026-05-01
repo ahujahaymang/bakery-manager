@@ -156,9 +156,12 @@ class RequestHandler:
         """Return a short label showing which bakery the admin is operating as."""
         from app.models import Tenant
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        if tenant:
-            return f"Admin view — bakery chat_id: {tenant.chat_id}"
-        return "Admin view"
+        if not tenant:
+            return "Admin view"
+        # If BAKERY_OWNER_CHAT_ID is set, this is a dedicated deployment — no need to show chat_id
+        if settings.BAKERY_OWNER_CHAT_ID and tenant.chat_id == settings.BAKERY_OWNER_CHAT_ID:
+            return "Admin view"
+        return f"Admin view — bakery {tenant.chat_id}"
 
     def _handle_admin_switch(self, db, admin_chat_id: str, text: str) -> str:
         """
