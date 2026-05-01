@@ -147,16 +147,14 @@ class RequestHandler:
     ) -> str:
         """Route admin messages: /switch command or regular agent call."""
         if text.startswith("/switch"):
-            return self._handle_switch_command(db, chat_id, text)
+            return self._handle_switch_command(chat_id, text)
 
-        active_tenant_id = self._resolve_admin_tenant(db, chat_id, tenant_id)
+        active_tenant_id = self._resolve_admin_tenant(chat_id, tenant_id)
         label = self._admin_label(db, active_tenant_id)
         response = await self._run_agent(db, active_tenant_id, chat_id, text)
         return f"_{label}_\n\n{response}"
 
-    def _resolve_admin_tenant(
-        self, db, admin_chat_id: str, fallback_tenant_id: UUID
-    ) -> UUID:
+    def _resolve_admin_tenant(self, admin_chat_id: str, fallback_tenant_id: UUID) -> UUID:
         """
         Determine which tenant the admin should operate as.
 
@@ -171,73 +169,90 @@ class RequestHandler:
 
         if settings.OWNER_CHAT_ID:
             from app.services.tenant_service import TenantService
-            tenant = TenantService(db).get_or_create_tenant(settings.OWNER_CHAT_ID)
-            self._admin_target[admin_chat_id] = tenant.tenant_id
-            return tenant.tenant_id
+            from app.database import get_registry_db
+            reg_db = next(get_registry_db())
+            try:
+                tenant = TenantService(reg_db).get_or_create_tenant(settings.OWNER_CHAT_ID)
+                self._admin_target[admin_chat_id] = tenant.tenant_id
+                return tenant.tenant_id
+            finally:
+                reg_db.close()
 
         from app.models import Tenant
-        first = (
-            db.query(Tenant)
-            .filter(Tenant.chat_id != admin_chat_id)
-            .order_by(Tenant.created_at)
-            .first()
-        )
-        if first:
-            self._admin_target[admin_chat_id] = first.tenant_id
-            return first.tenant_id
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            first = (
+                reg_db.query(Tenant)
+                .filter(Tenant.chat_id != admin_chat_id)
+                .order_by(Tenant.created_at)
+                .first()
+            )
+            if first:
+                self._admin_target[admin_chat_id] = first.tenant_id
+                return first.tenant_id
+        finally:
+            reg_db.close()
 
         return fallback_tenant_id
 
     def _admin_label(self, db, tenant_id: UUID) -> str:
         """Short label shown above every admin response."""
-        # Dedicated deployment with OWNER_CHAT_ID set — no need to show tenant details
         if settings.OWNER_CHAT_ID:
             return "Admin view"
 
         from app.models import Tenant
-        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        return f"Admin view — tenant {tenant.chat_id}" if tenant else "Admin view"
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+            return f"Admin view — tenant {tenant.chat_id}" if tenant else "Admin view"
+        finally:
+            reg_db.close()
 
     def _handle_switch_command(self, db, admin_chat_id: str, text: str) -> str:
-        """
-        Handle /switch [chat_id] command.
-
-        /switch          → list all available tenants
-        /switch <id>     → switch to that tenant and clear history
-        """
         parts = text.strip().split(maxsplit=1)
         if len(parts) < 2:
-            return self._list_tenants(db, admin_chat_id)
+            return self._list_tenants(admin_chat_id)
 
         target_chat_id = parts[1].strip()
         from app.models import Tenant
-        tenant = db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
-        if not tenant:
-            return f"❌ No tenant found with chat_id `{target_chat_id}`"
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
+            if not tenant:
+                return f"❌ No tenant found with chat_id `{target_chat_id}`"
+            self._admin_target[admin_chat_id] = tenant.tenant_id
+            self._history[admin_chat_id] = []
+            return f"✅ Switched to tenant `{target_chat_id}`"
+        finally:
+            reg_db.close()
 
-        self._admin_target[admin_chat_id] = tenant.tenant_id
-        self._history[admin_chat_id] = []  # clear history on switch
-        return f"✅ Switched to tenant `{target_chat_id}`"
-
-    def _list_tenants(self, db, admin_chat_id: str) -> str:
+    def _list_tenants(self, admin_chat_id: str) -> str:
         """Return a formatted list of all non-admin tenants."""
         from app.models import Tenant
-        tenants = (
-            db.query(Tenant)
-            .filter(Tenant.chat_id != admin_chat_id)
-            .order_by(Tenant.created_at)
-            .all()
-        )
-        if not tenants:
-            return "No tenants found yet."
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            tenants = (
+                reg_db.query(Tenant)
+                .filter(Tenant.chat_id != admin_chat_id)
+                .order_by(Tenant.created_at)
+                .all()
+            )
+            if not tenants:
+                return "No tenants found yet."
 
-        current = self._admin_target.get(admin_chat_id)
-        lines = ["*Available tenants:*\n"]
-        for t in tenants:
-            marker = " ← current" if current == t.tenant_id else ""
-            lines.append(f"• `{t.chat_id}`{marker}")
-        lines.append("\nUse `/switch <chat_id>` to switch.")
-        return "\n".join(lines)
+            current = self._admin_target.get(admin_chat_id)
+            lines = ["*Available tenants:*\n"]
+            for t in tenants:
+                marker = " ← current" if current == t.tenant_id else ""
+                lines.append(f"• `{t.chat_id}`{marker}")
+            lines.append("\nUse `/switch <chat_id>` to switch.")
+            return "\n".join(lines)
+        finally:
+            reg_db.close()
 
     # ── Agent ──────────────────────────────────────────────────────────────
 

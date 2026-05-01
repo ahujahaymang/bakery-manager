@@ -108,12 +108,59 @@ Every database record includes a `tenant_id`. All service queries filter by `ten
 
 Supports two engines, switchable via `DB_ENGINE` environment variable:
 
-| | SQLite | PostgreSQL |
+| | SQLite (per-tenant files) | PostgreSQL |
 |---|---|---|
-| Use case | Single-tenant, lightweight | Multi-tenant, production |
-| Cost | ~$0/month (file on disk) | ~$12/month (RDS db.t4g.micro) |
-| Backups | Hourly to S3, 24h retention | Automated by RDS |
+| Use case | Shared server, many tenants | High-volume or compliance needs |
+| Cost | ~$0/month (files on disk) | ~$12/month (RDS db.t4g.micro) |
+| Isolation | Separate `.db` file per tenant | Shared DB, isolated by `tenant_id` column |
+| Backups | Hourly per-tenant snapshots to S3 | Automated by RDS |
 | Setup | Zero config | Connection string required |
+
+**SQLite per-tenant layout:**
+```
+/data/
+    tenants.db                    ← shared registry (chat_id → tenant_id)
+    <tenant_id>.db                ← Priya's bakery data
+    <tenant_id>.db                ← Raj's bakery data
+    ...
+```
+
+Each request opens the shared `tenants.db` to resolve the tenant, then opens that tenant's own `.db` file for all business operations. SQLite's write lock is per-file, so concurrent requests from different tenants never block each other. Engines are cached in-process and reused across requests.
+
+### Deployment options
+
+**Option A — Shared server (recommended for most cases)**
+
+One EC2 instance serves all tenants. Each tenant gets their own SQLite file.
+
+```
+EC2 t4g.small (shared)
+├── /data/tenants.db
+├── /data/<tenant_id>.db    ← Priya
+├── /data/<tenant_id>.db    ← Raj
+└── /data/<tenant_id>.db    ← Meena
+```
+
+Cost: ~$10/month for the server regardless of tenant count. LLM API adds ~$0.22/tenant/month.
+
+**Option B — Dedicated stack per tenant**
+
+Each tenant gets their own EC2 instance and database. Use for enterprise customers or compliance requirements.
+
+```
+EC2 t4g.nano  ←→  SQLite on EBS volume  ←→  S3 backup bucket
+     or
+EC2 t4g.nano  ←→  RDS db.t4g.micro (PostgreSQL)
+```
+
+Cost: ~$4/month (SQLite) or ~$18/month (PostgreSQL) per tenant.
+
+Deployed with AWS CDK (TypeScript):
+```bash
+cdk deploy --context tenantId=my-business --context dbEngine=sqlite
+```
+
+See `DEPLOYMENT.md` for full setup instructions.
 
 ### Conversation history
 
@@ -143,27 +190,7 @@ Tenant ──┬── Customer ──── Order ──┬── OrderItem ─
 
 ## Deployment
 
-Each tenant (business) gets its own isolated AWS stack:
-
-```
-EC2 t4g.nano  ←→  SQLite on EBS volume  ←→  S3 backup bucket
-     or
-EC2 t4g.nano  ←→  RDS db.t4g.micro (PostgreSQL)
-```
-
-Deployed with AWS CDK (TypeScript). One command per tenant:
-
-```bash
-cdk deploy --context tenantId=my-business --context dbEngine=sqlite
-```
-
-**Cost per tenant:**
-- SQLite path: ~$4/month (EC2 + EBS + LLM API)
-- PostgreSQL path: ~$18/month (EC2 + RDS + LLM API)
-
-LLM cost is ~$0.22/month per tenant (GPT-4.1 nano at $0.10/1M input tokens).
-
-See `DEPLOYMENT.md` for full setup instructions.
+See the Database section above for deployment options and cost breakdown.
 
 ---
 
@@ -238,3 +265,16 @@ migrations/                     # Alembic schema migrations
 scripts/                        # Utility scripts
 tests/                          # pytest test suite
 ```
+
+---
+
+## Future Work
+
+| Feature | Description |
+|---|---|
+| **GST export sheet** | Generate GST-ready CSV/Excel with GSTIN, HSN codes, tax breakdowns for Indian businesses |
+| **Schedule C export** | US tax-ready CSV mapping revenue and expenses to Schedule C categories (sole proprietor filing) |
+| **Monthly P&L PDF** | Auto-generated profit & loss statement as a downloadable PDF, shareable with accountants |
+| **Multi-user access** | Allow multiple staff members to use the same bot with role-based permissions (owner vs. staff) |
+| **Auto WhatsApp sync** | Receive orders directly from WhatsApp messages without manual entry |
+| **Stripe integration** | Accept online payments, auto-reconcile with order records, send payment links to customers |

@@ -17,7 +17,7 @@ from typing import Optional
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-from app.database import get_db
+from app.database import get_db, get_registry_db
 from app.services.tenant_service import TenantService
 from app.handlers.request_handler import RequestHandler
 from app.error_handler import ErrorHandler, format_error_for_telegram
@@ -56,10 +56,18 @@ class TelegramBotListener:
             text = update.message.text.strip()
             logger.info(f"Text from {chat_id}: {text}")
 
-            db = next(get_db())
+            # Step 1: resolve tenant from the shared registry
+            registry_db = next(get_registry_db())
             try:
-                tenant = TenantService(db).get_or_create_tenant(chat_id)
-                response = await self.handler.handle_text(db, tenant.tenant_id, chat_id, text)
+                tenant = TenantService(registry_db).get_or_create_tenant(chat_id)
+                tenant_id = tenant.tenant_id  # read before session closes
+            finally:
+                registry_db.close()
+
+            # Step 2: open the tenant's own database for business operations
+            db = next(get_db(tenant_id))
+            try:
+                response = await self.handler.handle_text(db, tenant_id, chat_id, text)
                 await self._send(update, response)
             finally:
                 db.close()
@@ -88,18 +96,24 @@ class TelegramBotListener:
                 await (await update.message.photo[-1].get_file()).download_as_bytearray()
             )
 
-            db = next(get_db())
+            # Step 1: resolve tenant
+            registry_db = next(get_registry_db())
             try:
-                tenant = TenantService(db).get_or_create_tenant(chat_id)
+                tenant = TenantService(registry_db).get_or_create_tenant(chat_id)
+                tenant_id = tenant.tenant_id  # read before session closes
+            finally:
+                registry_db.close()
 
+            # Step 2: process image against tenant's database
+            db = next(get_db(tenant_id))
+            try:
                 await update.message.reply_text("🔍 Processing image...")
 
                 response = await self.handler.handle_image(
-                    db, tenant.tenant_id, chat_id, photo_bytes, caption
+                    db, tenant_id, chat_id, photo_bytes, caption
                 )
 
                 if response is None:
-                    # No caption - ask user to specify type
                     await self._send(update, (
                         "📸 I received your image!\n\n"
                         "Please add a caption to tell me what it is:\n"

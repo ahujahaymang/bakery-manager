@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     DB_ENGINE: Literal["sqlite", "postgresql"] = "sqlite"
 
     # SQLite (used when DB_ENGINE=sqlite)
-    SQLITE_PATH: str = "/data/ops.db"
+    # Directory where per-tenant .db files are stored.
+    # Each tenant gets their own file: <SQLITE_DIR>/<tenant_id>.db
+    SQLITE_PATH: str = "/data"
 
     # PostgreSQL / RDS (used when DB_ENGINE=postgresql)
     DB_HOST: str = "localhost"

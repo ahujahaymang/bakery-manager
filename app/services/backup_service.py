@@ -10,7 +10,6 @@ Only active when DB_ENGINE=sqlite and S3_BACKUP_BUCKET is set.
 
 import asyncio
 import logging
-import shutil
 import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -67,14 +66,19 @@ class BackupService:
         """Run backup every hour, prune old backups after each run."""
         while True:
             try:
-                key = await self.backup_now()
-                logger.info(f"Backup uploaded: s3://{self.bucket}/{key}")
+                from app.database import get_all_tenant_db_paths
+                paths = get_all_tenant_db_paths() or [self.db_path]
+                for path in paths:
+                    key = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda p=path: self._do_backup(p)
+                    )
+                    logger.info(f"Backup uploaded: s3://{self.bucket}/{key}")
                 await self._prune_old_backups()
             except Exception as e:
                 logger.error(f"Backup failed: {e}", exc_info=True)
-            await asyncio.sleep(3600)  # 1 hour
+            await asyncio.sleep(3600)
 
-    def _do_backup(self) -> str:
+    def _do_backup(self, db_path: str = None) -> str:
         """
         Create a consistent SQLite snapshot and upload to S3.
         Uses sqlite3's built-in backup API — safe while the DB is in use.
@@ -82,15 +86,17 @@ class BackupService:
         import sqlite3
         import boto3
 
+        source_path = db_path or self.db_path
+        db_name = Path(source_path).stem  # e.g. tenant_id or "tenants"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        key = f"{self.prefix}/{timestamp}.db"
+        key = f"{self.prefix}/{db_name}/{timestamp}.db"
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
 
         try:
             # Online backup — consistent snapshot without locking
-            src = sqlite3.connect(str(self.db_path))
+            src = sqlite3.connect(str(source_path))
             dst = sqlite3.connect(tmp_path)
             src.backup(dst)
             dst.close()
