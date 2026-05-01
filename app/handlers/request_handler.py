@@ -16,6 +16,7 @@ from app.services.agent_service import AgentService
 from app.services.tool_executor import ToolExecutor
 from app.services.image_service import ImageService
 from app.services.llm_service import LLMService
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class RequestHandler:
         self.image_service = ImageService(self.llm_service)
         # {chat_id: [{role, content}, ...]}
         self._history: Dict[str, List[dict]] = defaultdict(list)
+        # admin impersonation: {admin_chat_id: tenant_id}
+        self._admin_target: Dict[str, UUID] = {}
 
     # ── History management ─────────────────────────────────────────────────
 
@@ -60,15 +63,50 @@ class RequestHandler:
         """
         Process a text message and return the agent's response.
 
+        Admin behaviour (when ADMIN_CHAT_ID matches chat_id):
+        - Skips the welcome message
+        - Uses the bakery's owner tenant by default (first non-admin tenant)
+        - '/switch <chat_id>' lets admin impersonate a specific tenant
+
+        New user behaviour:
+        - Returns welcome message on first contact
+
         Args:
             db: Database session
-            tenant_id: Tenant UUID
+            tenant_id: Tenant UUID resolved from chat_id (may be overridden for admin)
             chat_id: Unique identifier for this conversation
             text: User's message
 
         Returns:
             str: Response to send back to the user
         """
+        is_admin = settings.ADMIN_CHAT_ID and chat_id == settings.ADMIN_CHAT_ID
+
+        # Admin: handle /switch command
+        if is_admin and text.startswith("/switch"):
+            return self._handle_admin_switch(db, chat_id, text)
+
+        # Admin: resolve which tenant to operate as
+        if is_admin:
+            tenant_id = self._resolve_admin_tenant(db, chat_id, tenant_id)
+            active_label = self._admin_active_label(db, tenant_id)
+            # Prefix agent responses with which bakery is active (only for admin)
+            executor = ToolExecutor(db, tenant_id)
+            response = await self.agent.run(
+                user_message=text,
+                history=self._get_history(chat_id),
+                tool_executor=executor.execute
+            )
+            self._append(chat_id, "user", text)
+            self._append(chat_id, "assistant", response)
+            return f"_{active_label}_\n\n{response}"
+
+        # Normal user: show welcome on first contact
+        if not self._get_history(chat_id):
+            welcome = self._welcome_message()
+            self._append(chat_id, "assistant", welcome)
+            return welcome
+
         executor = ToolExecutor(db, tenant_id)
         response = await self.agent.run(
             user_message=text,
@@ -78,6 +116,136 @@ class RequestHandler:
         self._append(chat_id, "user", text)
         self._append(chat_id, "assistant", response)
         return response
+
+    def _resolve_admin_tenant(self, db, admin_chat_id: str, fallback_tenant_id: UUID) -> UUID:
+        """
+        Return the tenant the admin is currently operating as.
+
+        Resolution order:
+        1. Already switched to a specific tenant this session → use that
+        2. BAKERY_OWNER_CHAT_ID is set (dedicated deployment) → use that owner's tenant
+        3. Scan DB for first non-admin tenant (shared-bot deployment)
+        4. Fall back to admin's own tenant (nothing else exists yet)
+        """
+        # 1. Already switched this session
+        if admin_chat_id in self._admin_target:
+            return self._admin_target[admin_chat_id]
+
+        # 2. Dedicated deployment — owner chat_id explicitly configured
+        if settings.BAKERY_OWNER_CHAT_ID:
+            from app.services.tenant_service import TenantService
+            tenant_svc = TenantService(db)
+            owner_tenant = tenant_svc.get_or_create_tenant(settings.BAKERY_OWNER_CHAT_ID)
+            self._admin_target[admin_chat_id] = owner_tenant.tenant_id
+            return owner_tenant.tenant_id
+
+        # 3. Shared deployment — use first non-admin tenant in DB
+        from app.models import Tenant
+        tenants = db.query(Tenant).filter(
+            Tenant.chat_id != admin_chat_id
+        ).order_by(Tenant.created_at).all()
+
+        if tenants:
+            self._admin_target[admin_chat_id] = tenants[0].tenant_id
+            return tenants[0].tenant_id
+
+        # 4. Nothing else exists — fall back to admin's own tenant
+        return fallback_tenant_id
+
+    def _admin_active_label(self, db, tenant_id: UUID) -> str:
+        """Return a short label showing which bakery the admin is operating as."""
+        from app.models import Tenant
+        tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+        if tenant:
+            return f"Admin view — bakery chat_id: {tenant.chat_id}"
+        return "Admin view"
+
+    def _handle_admin_switch(self, db, admin_chat_id: str, text: str) -> str:
+        """
+        Handle /switch <chat_id> command for admin.
+        Switches which bakery tenant the admin is operating as.
+        """
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            # List available tenants
+            from app.models import Tenant
+            tenants = db.query(Tenant).filter(
+                Tenant.chat_id != admin_chat_id
+            ).order_by(Tenant.created_at).all()
+
+            if not tenants:
+                return "No bakery tenants found yet."
+
+            lines = ["*Available bakeries:*\n"]
+            for t in tenants:
+                current = " ← current" if self._admin_target.get(admin_chat_id) == t.tenant_id else ""
+                lines.append(f"• `{t.chat_id}`{current}")
+            lines.append("\nUse `/switch <chat_id>` to switch.")
+            return "\n".join(lines)
+
+        target_chat_id = parts[1].strip()
+        from app.models import Tenant
+        tenant = db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
+
+        if not tenant:
+            return f"❌ No bakery found with chat_id `{target_chat_id}`"
+
+        self._admin_target[admin_chat_id] = tenant.tenant_id
+        # Clear history so context doesn't bleed between bakeries
+        self._history[admin_chat_id] = []
+        return f"✅ Switched to bakery `{target_chat_id}`"
+
+    def _welcome_message(self) -> str:
+        """
+        Welcome message shown to every new user on first contact.
+        Explains all capabilities so they know what to ask for.
+        """
+        return (
+            "👋 *Welcome to Bakery Operations Bot!*\n\n"
+            "I'm your bakery assistant — just tell me what you need in plain language. "
+            "No commands to memorise.\n\n"
+
+            "📦 *Inventory*\n"
+            "• Add or update ingredients and packaging\n"
+            "• Check stock levels\n"
+            "_'Add 5kg flour at ₹40/kg'_\n"
+            "_'How much sugar do I have?'_\n\n"
+
+            "📖 *Recipes*\n"
+            "• Create recipes with ingredients and packaging\n"
+            "• Calculate cost per unit\n"
+            "• Edit or delete recipes\n"
+            "_'Create recipe Brownies yield 12'_\n"
+            "_'Show recipe Brownies'_\n"
+            "_'Add 100g butter to Brownies'_\n\n"
+
+            "👥 *Customers*\n"
+            "• Add and search customers\n"
+            "_'Add customer Priya, phone 9876543210'_\n\n"
+
+            "🛒 *Orders*\n"
+            "• Create, cancel, or delete orders\n"
+            "• Mark orders as delivered\n"
+            "• View upcoming or unpaid orders\n"
+            "_'Order for Priya — 2 Brownies at ₹150 each, deliver May 10'_\n"
+            "_'Show unpaid orders'_\n\n"
+
+            "💰 *Payments*\n"
+            "• Record payments against orders\n"
+            "• View payment history\n"
+            "_'Record ₹300 cash payment for Priya'_\n\n"
+
+            "📊 *Reports*\n"
+            "• Weekly profit breakdown\n"
+            "_'Show this week\\'s profit'_\n\n"
+
+            "📸 *Images*\n"
+            "• Send a photo of a handwritten recipe with caption *recipe*\n"
+            "• Send a payment receipt with caption *receipt*\n"
+            "• Send a WhatsApp order screenshot with caption *order*\n\n"
+
+            "What would you like to start with?"
+        )
 
     async def handle_image(
         self,

@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     S3_BACKUP_PREFIX: str = "backups"   # folder inside the bucket
     S3_BACKUP_RETAIN_HOURS: int = 24    # delete backups older than this
 
+    # Admin
+    ADMIN_CHAT_ID: str = ""  # your personal Telegram chat_id — skips welcome, uses owner tenant
+    # For dedicated per-bakery deployments: set this to the bakery owner's chat_id.
+    # Admin will operate directly on that tenant without needing the owner to message first.
+    # Leave blank for shared-bot deployments (admin uses /switch to pick a tenant).
+    BAKERY_OWNER_CHAT_ID: str = ""
+
     # App
     WEBHOOK_URL: str = ""
 

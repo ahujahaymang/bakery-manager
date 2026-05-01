@@ -148,10 +148,11 @@ export class BakeryStack extends cdk.Stack {
     }
 
     // ── SSM Parameters for secrets ────────────────────────────────────────
-    // Telegram token and LLM key are stored in SSM Parameter Store (SecureString).
-    // They must be created manually before deploying:
+    // Telegram token, LLM key, and admin chat_id are stored in SSM Parameter Store.
+    // Create them before deploying:
     //   aws ssm put-parameter --name /bakery/<slug>/TELEGRAM_BOT_TOKEN --type SecureString --value <token>
     //   aws ssm put-parameter --name /bakery/<slug>/LLM_API_KEY --type SecureString --value <key>
+    //   aws ssm put-parameter --name /bakery/<slug>/ADMIN_CHAT_ID --type String --value <your-chat-id>
     const ssmPrefix = `/bakery/${slug}`;
 
     role.addToPolicy(new iam.PolicyStatement({
@@ -186,6 +187,8 @@ export class BakeryStack extends cdk.Stack {
       // Fetch secrets from SSM
       `TELEGRAM_BOT_TOKEN=$(aws ssm get-parameter --name ${ssmPrefix}/TELEGRAM_BOT_TOKEN --with-decryption --query Parameter.Value --output text)`,
       `LLM_API_KEY=$(aws ssm get-parameter --name ${ssmPrefix}/LLM_API_KEY --with-decryption --query Parameter.Value --output text)`,
+      `ADMIN_CHAT_ID=$(aws ssm get-parameter --name ${ssmPrefix}/ADMIN_CHAT_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
+      `BAKERY_OWNER_CHAT_ID=$(aws ssm get-parameter --name ${ssmPrefix}/BAKERY_OWNER_CHAT_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
 
       // Fetch RDS password if needed
       ...(dbEngine === 'rds' ? [
@@ -197,6 +200,8 @@ export class BakeryStack extends cdk.Stack {
       `TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN`,
       `LLM_API_KEY=$LLM_API_KEY`,
       `LLM_MODEL=gpt-4.1-nano`,
+      `ADMIN_CHAT_ID=$ADMIN_CHAT_ID`,
+      `BAKERY_OWNER_CHAT_ID=$BAKERY_OWNER_CHAT_ID`,
       ...Object.entries({ ...backupEnv, ...rdsEnv }).map(([k, v]) => `${k}=${v}`),
       ...(dbEngine === 'rds' ? ['DB_PASSWORD=$DB_PASSWORD'] : []),
       'EOF',
