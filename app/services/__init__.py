@@ -1,8 +1,8 @@
 """
-Services module for business logic.
+Services package.
 
-This module contains all service classes that implement the business logic
-for the Bakery Operations Telegram Bot.
+Contains all business logic services. Each service is responsible for
+one domain area and enforces tenant isolation on every query.
 """
 
 from app.services.tenant_service import TenantService
@@ -14,10 +14,10 @@ from app.services.payment_service import PaymentService
 from app.services.reporting_service import ReportingService
 from app.services.audit_service import AuditService
 from app.services.llm_service import LLMService, Intent, IntentResult
-from app.services.conversation_service import ConversationService, ConversationState, ConversationContext
 from app.services.image_service import ImageService
 from app.services.agent_service import AgentService
 from app.services.tool_executor import ToolExecutor
+from app.services.backup_service import BackupService, create_backup_service
 
 __all__ = [
     "TenantService",
@@ -31,10 +31,9 @@ __all__ = [
     "LLMService",
     "Intent",
     "IntentResult",
-    "ConversationService",
-    "ConversationState",
-    "ConversationContext",
     "ImageService",
     "AgentService",
     "ToolExecutor",
+    "BackupService",
+    "create_backup_service",
 ]

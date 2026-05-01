@@ -17,7 +17,7 @@ from app.services.recipe_service import RecipeService
 from app.services.order_service import OrderCreate, OrderItemCreate, OrderService
 from app.services.payment_service import PaymentService
 from app.services.reporting_service import ReportingService
-from app.helpers.order_finder import OrderFinder
+from app.services.order_finder import OrderFinder
 from app.models import Payment
 
 logger = logging.getLogger(__name__)

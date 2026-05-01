@@ -32,21 +32,13 @@ class InventoryService:
     def __init__(self, db: Session):
         """
         Initialize InventoryService with database session.
-        
+
         Args:
             db: SQLAlchemy database session
         """
         self.db = db
         self.audit_service = AuditService(db)
-    def __init__(self, db: Session):
-        """
-        Initialize InventoryService with database session.
-        
-        Args:
-            db: SQLAlchemy database session
-        """
-        self.db = db
-    
+
     def create_item(
         self,
         tenant_id: UUID,

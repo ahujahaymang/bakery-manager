@@ -1,3 +1,10 @@
+"""
+Application configuration.
+
+Reads settings from environment variables and .env file.
+Supports both SQLite (lightweight, single-tenant) and PostgreSQL (multi-tenant, production).
+"""
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Literal
 
@@ -5,38 +12,41 @@ from typing import Literal
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Database
+    # ── Database ───────────────────────────────────────────────────────────
     DB_ENGINE: Literal["sqlite", "postgresql"] = "sqlite"
 
     # SQLite (used when DB_ENGINE=sqlite)
-    SQLITE_PATH: str = "/data/bakery.db"
+    SQLITE_PATH: str = "/data/ops.db"
 
     # PostgreSQL / RDS (used when DB_ENGINE=postgresql)
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
-    DB_NAME: str = "bakery_ops"
+    DB_NAME: str = "ops_db"
     DB_USER: str = "postgres"
     DB_PASSWORD: str = "changeme"
 
-    # Telegram
+    # ── Telegram ───────────────────────────────────────────────────────────
     TELEGRAM_BOT_TOKEN: str = ""
 
-    # LLM
+    # ── LLM ───────────────────────────────────────────────────────────────
     LLM_API_KEY: str = ""
     LLM_API_BASE_URL: str = "https://api.openai.com/v1"
     LLM_MODEL: str = "gpt-4.1-nano"
 
-    # S3 backup (SQLite only)
-    S3_BACKUP_BUCKET: str = ""          # e.g. "bakery-ops-backups"
-    S3_BACKUP_PREFIX: str = "backups"   # folder inside the bucket
-    S3_BACKUP_RETAIN_HOURS: int = 24    # delete backups older than this
+    # ── S3 backup (SQLite only) ────────────────────────────────────────────
+    S3_BACKUP_BUCKET: str = ""        # e.g. "my-ops-bot-backups"
+    S3_BACKUP_PREFIX: str = "backups"
+    S3_BACKUP_RETAIN_HOURS: int = 24
 
-    # Admin
-    ADMIN_CHAT_ID: str = ""  # your personal Telegram chat_id — skips welcome, uses owner tenant
-    # For dedicated per-bakery deployments: set this to the bakery owner's chat_id.
-    # Admin will operate directly on that tenant without needing the owner to message first.
-    # Leave blank for shared-bot deployments (admin uses /switch to pick a tenant).
-    BAKERY_OWNER_CHAT_ID: str = ""
+    # ── Admin ─────────────────────────────────────────────────────────────
+    # Your personal Telegram chat_id — skips welcome, operates on owner tenant.
+    # Find yours by messaging @userinfobot on Telegram.
+    ADMIN_CHAT_ID: str = ""
+
+    # For dedicated single-tenant deployments: set to the owner's chat_id.
+    # Admin will operate on that tenant directly without the owner needing
+    # to message first. Leave blank for shared multi-tenant deployments.
+    OWNER_CHAT_ID: str = ""
 
     # App
     WEBHOOK_URL: str = ""

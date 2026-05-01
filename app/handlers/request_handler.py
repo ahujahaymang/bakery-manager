@@ -2,9 +2,8 @@
 Platform-agnostic request handler.
 
 Owns the agent loop, conversation history, and image processing logic.
-Can be used with Telegram, WhatsApp, or any other messaging platform.
-The caller only needs to supply: a chat_id, a db session, and raw input
-(text or image bytes + caption).
+Works with any messaging platform — Telegram, WhatsApp, Slack, etc.
+The caller supplies: chat_id, db session, and raw input (text or image).
 """
 
 import logging
@@ -20,6 +19,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Number of message turns kept in memory per conversation
 MAX_HISTORY = 20
 
 
@@ -28,10 +28,11 @@ class RequestHandler:
     Platform-agnostic handler that runs the LLM agent for every request.
 
     Responsibilities:
-    - Maintain per-chat conversation history
-    - Process text messages through the agent
-    - Process images: extract data, summarise, pass to agent
-    - Return a plain string response for the caller to send
+    - Maintain per-chat conversation history (in-memory, last MAX_HISTORY turns)
+    - Route text messages through the LLM agent
+    - Process images: extract structured data, summarise, pass to agent
+    - Handle admin impersonation for multi-tenant management
+    - Return a plain string response for the caller to deliver
 
     The caller (telegram_listener, whatsapp_listener, etc.) only handles
     platform I/O: receiving messages, downloading files, sending replies.
@@ -41,17 +42,19 @@ class RequestHandler:
         self.agent = AgentService()
         self.llm_service = LLMService()
         self.image_service = ImageService(self.llm_service)
-        # {chat_id: [{role, content}, ...]}
+        # Per-chat message history: {chat_id: [{role, content}, ...]}
         self._history: Dict[str, List[dict]] = defaultdict(list)
-        # admin impersonation: {admin_chat_id: tenant_id}
+        # Admin tenant override: {admin_chat_id: tenant_id}
         self._admin_target: Dict[str, UUID] = {}
 
-    # ── History management ─────────────────────────────────────────────────
+    # ── History ────────────────────────────────────────────────────────────
 
     def _get_history(self, chat_id: str) -> List[dict]:
+        """Return the conversation history for a chat."""
         return self._history[chat_id]
 
-    def _append(self, chat_id: str, role: str, content: str):
+    def _append(self, chat_id: str, role: str, content: str) -> None:
+        """Append a message to history, trimming to MAX_HISTORY."""
         history = self._history[chat_id]
         history.append({"role": role, "content": content})
         if len(history) > MAX_HISTORY:
@@ -63,149 +66,224 @@ class RequestHandler:
         """
         Process a text message and return the agent's response.
 
-        Admin behaviour (when ADMIN_CHAT_ID matches chat_id):
-        - Skips the welcome message
-        - Uses the bakery's owner tenant by default (first non-admin tenant)
-        - '/switch <chat_id>' lets admin impersonate a specific tenant
-
-        New user behaviour:
-        - Returns welcome message on first contact
+        Handles three cases in order:
+        1. Admin /switch command — list or switch active tenant
+        2. Admin message — route to configured tenant, prefix response with label
+        3. New user (no history) — return welcome message
+        4. Regular message — run agent with conversation history
 
         Args:
             db: Database session
             tenant_id: Tenant UUID resolved from chat_id (may be overridden for admin)
-            chat_id: Unique identifier for this conversation
-            text: User's message
+            chat_id: Unique conversation identifier
+            text: User's message text
 
         Returns:
-            str: Response to send back to the user
+            Response string to deliver to the user
         """
-        is_admin = settings.ADMIN_CHAT_ID and chat_id == settings.ADMIN_CHAT_ID
+        if self._is_admin(chat_id):
+            return await self._handle_admin_message(db, tenant_id, chat_id, text)
 
-        # Admin: handle /switch command
-        if is_admin and text.startswith("/switch"):
-            return self._handle_admin_switch(db, chat_id, text)
-
-        # Admin: resolve which tenant to operate as
-        if is_admin:
-            tenant_id = self._resolve_admin_tenant(db, chat_id, tenant_id)
-            active_label = self._admin_active_label(db, tenant_id)
-            # Prefix agent responses with which bakery is active (only for admin)
-            executor = ToolExecutor(db, tenant_id)
-            response = await self.agent.run(
-                user_message=text,
-                history=self._get_history(chat_id),
-                tool_executor=executor.execute
-            )
-            self._append(chat_id, "user", text)
-            self._append(chat_id, "assistant", response)
-            return f"_{active_label}_\n\n{response}"
-
-        # Normal user: show welcome on first contact
         if not self._get_history(chat_id):
-            welcome = self._welcome_message()
-            self._append(chat_id, "assistant", welcome)
-            return welcome
+            return self._first_contact_message()
 
-        executor = ToolExecutor(db, tenant_id)
-        response = await self.agent.run(
-            user_message=text,
-            history=self._get_history(chat_id),
-            tool_executor=executor.execute
-        )
-        self._append(chat_id, "user", text)
-        self._append(chat_id, "assistant", response)
-        return response
+        return await self._run_agent(db, tenant_id, chat_id, text)
 
-    def _resolve_admin_tenant(self, db, admin_chat_id: str, fallback_tenant_id: UUID) -> UUID:
+    async def handle_image(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        image_bytes: bytes,
+        caption: str,
+    ) -> Optional[str]:
         """
-        Return the tenant the admin is currently operating as.
+        Process an image message and return the agent's response.
+
+        Determines image type from caption keywords, extracts structured data
+        via GPT-4o Vision, summarises it as a natural language instruction,
+        then passes it to the agent.
+
+        Args:
+            db: Database session
+            tenant_id: Tenant UUID
+            chat_id: Unique conversation identifier
+            image_bytes: Raw image bytes
+            caption: User-provided caption (determines image type)
+
+        Returns:
+            Response string, or None if caption is missing/unrecognised
+            (caller should prompt the user to add a caption)
+        """
+        image_type = self._detect_image_type(caption)
+        if image_type is None:
+            return None
+
+        result = await self._extract_image_data(image_type, image_bytes)
+        if "error" in result:
+            return f"⚠️ {result['error']}"
+
+        summary = self._summarise_image_result(image_type, result)
+        logger.info(f"Image summary ({image_type}): {summary[:200]}")
+
+        return await self._run_agent(
+            db, tenant_id, chat_id,
+            user_message=summary,
+            history_label=f"[Image: {image_type}]",
+        )
+
+    async def close(self) -> None:
+        """Shut down the agent and LLM client."""
+        await self.agent.close()
+
+    # ── Admin ──────────────────────────────────────────────────────────────
+
+    def _is_admin(self, chat_id: str) -> bool:
+        """Return True if this chat_id belongs to the configured admin."""
+        return bool(settings.ADMIN_CHAT_ID) and chat_id == settings.ADMIN_CHAT_ID
+
+    async def _handle_admin_message(
+        self, db, tenant_id: UUID, chat_id: str, text: str
+    ) -> str:
+        """Route admin messages: /switch command or regular agent call."""
+        if text.startswith("/switch"):
+            return self._handle_switch_command(db, chat_id, text)
+
+        active_tenant_id = self._resolve_admin_tenant(db, chat_id, tenant_id)
+        label = self._admin_label(db, active_tenant_id)
+        response = await self._run_agent(db, active_tenant_id, chat_id, text)
+        return f"_{label}_\n\n{response}"
+
+    def _resolve_admin_tenant(
+        self, db, admin_chat_id: str, fallback_tenant_id: UUID
+    ) -> UUID:
+        """
+        Determine which tenant the admin should operate as.
 
         Resolution order:
-        1. Already switched to a specific tenant this session → use that
-        2. BAKERY_OWNER_CHAT_ID is set (dedicated deployment) → use that owner's tenant
-        3. Scan DB for first non-admin tenant (shared-bot deployment)
-        4. Fall back to admin's own tenant (nothing else exists yet)
+        1. Already switched this session → use cached target
+        2. OWNER_CHAT_ID configured (dedicated deployment) → use that tenant
+        3. Scan DB for first non-admin tenant (shared deployment)
+        4. Fall back to admin's own tenant
         """
-        # 1. Already switched this session
         if admin_chat_id in self._admin_target:
             return self._admin_target[admin_chat_id]
 
-        # 2. Dedicated deployment — owner chat_id explicitly configured
-        if settings.BAKERY_OWNER_CHAT_ID:
+        if settings.OWNER_CHAT_ID:
             from app.services.tenant_service import TenantService
-            tenant_svc = TenantService(db)
-            owner_tenant = tenant_svc.get_or_create_tenant(settings.BAKERY_OWNER_CHAT_ID)
-            self._admin_target[admin_chat_id] = owner_tenant.tenant_id
-            return owner_tenant.tenant_id
+            tenant = TenantService(db).get_or_create_tenant(settings.OWNER_CHAT_ID)
+            self._admin_target[admin_chat_id] = tenant.tenant_id
+            return tenant.tenant_id
 
-        # 3. Shared deployment — use first non-admin tenant in DB
         from app.models import Tenant
-        tenants = db.query(Tenant).filter(
-            Tenant.chat_id != admin_chat_id
-        ).order_by(Tenant.created_at).all()
+        first = (
+            db.query(Tenant)
+            .filter(Tenant.chat_id != admin_chat_id)
+            .order_by(Tenant.created_at)
+            .first()
+        )
+        if first:
+            self._admin_target[admin_chat_id] = first.tenant_id
+            return first.tenant_id
 
-        if tenants:
-            self._admin_target[admin_chat_id] = tenants[0].tenant_id
-            return tenants[0].tenant_id
-
-        # 4. Nothing else exists — fall back to admin's own tenant
         return fallback_tenant_id
 
-    def _admin_active_label(self, db, tenant_id: UUID) -> str:
-        """Return a short label showing which bakery the admin is operating as."""
+    def _admin_label(self, db, tenant_id: UUID) -> str:
+        """Short label shown above every admin response."""
+        # Dedicated deployment with OWNER_CHAT_ID set — no need to show tenant details
+        if settings.OWNER_CHAT_ID:
+            return "Admin view"
+
         from app.models import Tenant
         tenant = db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-        if not tenant:
-            return "Admin view"
-        # If BAKERY_OWNER_CHAT_ID is set, this is a dedicated deployment — no need to show chat_id
-        if settings.BAKERY_OWNER_CHAT_ID and tenant.chat_id == settings.BAKERY_OWNER_CHAT_ID:
-            return "Admin view"
-        return f"Admin view — bakery {tenant.chat_id}"
+        return f"Admin view — tenant {tenant.chat_id}" if tenant else "Admin view"
 
-    def _handle_admin_switch(self, db, admin_chat_id: str, text: str) -> str:
+    def _handle_switch_command(self, db, admin_chat_id: str, text: str) -> str:
         """
-        Handle /switch <chat_id> command for admin.
-        Switches which bakery tenant the admin is operating as.
+        Handle /switch [chat_id] command.
+
+        /switch          → list all available tenants
+        /switch <id>     → switch to that tenant and clear history
         """
         parts = text.strip().split(maxsplit=1)
         if len(parts) < 2:
-            # List available tenants
-            from app.models import Tenant
-            tenants = db.query(Tenant).filter(
-                Tenant.chat_id != admin_chat_id
-            ).order_by(Tenant.created_at).all()
-
-            if not tenants:
-                return "No bakery tenants found yet."
-
-            lines = ["*Available bakeries:*\n"]
-            for t in tenants:
-                current = " ← current" if self._admin_target.get(admin_chat_id) == t.tenant_id else ""
-                lines.append(f"• `{t.chat_id}`{current}")
-            lines.append("\nUse `/switch <chat_id>` to switch.")
-            return "\n".join(lines)
+            return self._list_tenants(db, admin_chat_id)
 
         target_chat_id = parts[1].strip()
         from app.models import Tenant
         tenant = db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
-
         if not tenant:
-            return f"❌ No bakery found with chat_id `{target_chat_id}`"
+            return f"❌ No tenant found with chat_id `{target_chat_id}`"
 
         self._admin_target[admin_chat_id] = tenant.tenant_id
-        # Clear history so context doesn't bleed between bakeries
-        self._history[admin_chat_id] = []
-        return f"✅ Switched to bakery `{target_chat_id}`"
+        self._history[admin_chat_id] = []  # clear history on switch
+        return f"✅ Switched to tenant `{target_chat_id}`"
 
-    def _welcome_message(self) -> str:
+    def _list_tenants(self, db, admin_chat_id: str) -> str:
+        """Return a formatted list of all non-admin tenants."""
+        from app.models import Tenant
+        tenants = (
+            db.query(Tenant)
+            .filter(Tenant.chat_id != admin_chat_id)
+            .order_by(Tenant.created_at)
+            .all()
+        )
+        if not tenants:
+            return "No tenants found yet."
+
+        current = self._admin_target.get(admin_chat_id)
+        lines = ["*Available tenants:*\n"]
+        for t in tenants:
+            marker = " ← current" if current == t.tenant_id else ""
+            lines.append(f"• `{t.chat_id}`{marker}")
+        lines.append("\nUse `/switch <chat_id>` to switch.")
+        return "\n".join(lines)
+
+    # ── Agent ──────────────────────────────────────────────────────────────
+
+    async def _run_agent(
+        self,
+        db,
+        tenant_id: UUID,
+        chat_id: str,
+        user_message: str,
+        history_label: str = "",
+    ) -> str:
+        """
+        Run the LLM agent with the current conversation history.
+
+        Args:
+            db: Database session
+            tenant_id: Tenant to operate on
+            chat_id: Conversation identifier (for history)
+            user_message: Message to send to the agent
+            history_label: Optional prefix for the history entry (e.g. "[Image: recipe]")
+
+        Returns:
+            Agent's response string
+        """
+        executor = ToolExecutor(db, tenant_id)
+        response = await self.agent.run(
+            user_message=user_message,
+            history=self._get_history(chat_id),
+            tool_executor=executor.execute,
+        )
+        history_entry = f"{history_label} {user_message}".strip() if history_label else user_message
+        self._append(chat_id, "user", history_entry)
+        self._append(chat_id, "assistant", response)
+        return response
+
+    # ── Welcome ────────────────────────────────────────────────────────────
+
+    def _first_contact_message(self) -> str:
         """
         Welcome message shown to every new user on first contact.
         Explains all capabilities so they know what to ask for.
+        Seeded into history so the next message goes straight to the agent.
         """
-        return (
-            "👋 *Welcome to Bakery Operations Bot!*\n\n"
-            "I'm your bakery assistant — just tell me what you need in plain language. "
+        msg = (
+            "👋 *Welcome to Operations Bot!*\n\n"
+            "I'm your business assistant — just tell me what you need in plain language. "
             "No commands to memorise.\n\n"
 
             "📦 *Inventory*\n"
@@ -245,98 +323,65 @@ class RequestHandler:
             "📸 *Images*\n"
             "• Send a photo of a handwritten recipe with caption *recipe*\n"
             "• Send a payment receipt with caption *receipt*\n"
-            "• Send a WhatsApp order screenshot with caption *order*\n\n"
+            "• Send an order screenshot with caption *order*\n\n"
 
             "What would you like to start with?"
         )
+        return msg
 
-    async def handle_image(
-        self,
-        db,
-        tenant_id: UUID,
-        chat_id: str,
-        image_bytes: bytes,
-        caption: str
-    ) -> Optional[str]:
+    # ── Image processing ───────────────────────────────────────────────────
+
+    # Keywords that identify each image type from the caption
+    _IMAGE_TYPE_KEYWORDS: Dict[str, List[str]] = {
+        "receipt": ["receipt", "payment", "paid", "bill"],
+        "recipe":  ["recipe", "ingredients", "formula"],
+        "order":   ["order", "whatsapp", "message", "sms"],
+    }
+
+    def _detect_image_type(self, caption: str) -> Optional[str]:
         """
-        Process an image message and return the agent's response.
+        Determine image type from caption keywords.
 
-        Args:
-            db: Database session
-            tenant_id: Tenant UUID
-            chat_id: Unique identifier for this conversation
-            image_bytes: Raw image bytes
-            caption: Caption provided by the user (used to determine image type)
-
-        Returns:
-            str: Response to send back to the user, or None if caption is missing
+        Returns the image type string, or None if unrecognised.
         """
         caption_lower = caption.lower()
+        for image_type, keywords in self._IMAGE_TYPE_KEYWORDS.items():
+            if any(kw in caption_lower for kw in keywords):
+                return image_type
+        return None
 
-        if any(w in caption_lower for w in ["receipt", "payment", "paid", "bill"]):
-            result = await self.image_service.process_receipt_image(image_bytes)
-            image_type = "receipt"
-        elif any(w in caption_lower for w in ["recipe", "ingredients", "formula"]):
-            result = await self.image_service.process_recipe_image(image_bytes)
-            image_type = "recipe"
-        elif any(w in caption_lower for w in ["order", "whatsapp", "message", "sms"]):
-            result = await self.image_service.process_order_image(image_bytes)
-            image_type = "order"
-        else:
-            # No caption - caller should ask the user to add one
-            return None
-
-        if "error" in result:
-            return f"⚠️ {result['error']}"
-
-        summary = self._summarise_image_result(image_type, result)
-        logger.info(f"Image summary ({image_type}): {summary[:200]}")
-
-        executor = ToolExecutor(db, tenant_id)
-        response = await self.agent.run(
-            user_message=summary,
-            history=self._get_history(chat_id),
-            tool_executor=executor.execute
-        )
-        self._append(chat_id, "user", f"[Image: {image_type}] {summary}")
-        self._append(chat_id, "assistant", response)
-        return response
-
-    async def close(self):
-        await self.agent.close()
-
-    # ── Image summarisation ────────────────────────────────────────────────
+    async def _extract_image_data(self, image_type: str, image_bytes: bytes) -> dict:
+        """Dispatch to the correct ImageService method based on image type."""
+        extractors = {
+            "receipt": self.image_service.process_receipt_image,
+            "recipe":  self.image_service.process_recipe_image,
+            "order":   self.image_service.process_order_image,
+        }
+        return await extractors[image_type](image_bytes)
 
     def _summarise_image_result(self, image_type: str, result: dict) -> str:
         """
         Convert extracted image data into a natural language instruction
         that the agent can act on directly.
         """
-        if image_type == "recipe":
-            return self._summarise_recipe(result)
-        elif image_type == "receipt":
-            return self._summarise_receipt(result)
-        elif image_type == "order":
-            return self._summarise_order(result)
-        return f"I scanned a {image_type} image: {result}"
+        summarisers = {
+            "receipt": self._summarise_receipt,
+            "recipe":  self._summarise_recipe,
+            "order":   self._summarise_order,
+        }
+        return summarisers[image_type](result)
 
     def _summarise_recipe(self, result: dict) -> str:
-        name = result.get("name", "Unknown")
-        yield_per_batch = result.get("yield_per_batch") or 1
-        ingredients = result.get("ingredients", [])
-        packaging = result.get("packaging", [])
-
-        lines = ["I scanned a recipe image. Please create this recipe:"]
-        lines.append(f"Name: {name}")
-        lines.append(f"Yield per batch: {yield_per_batch}")
-        if ingredients:
-            lines.append("Ingredients:")
-            for ing in ingredients:
-                lines.append(f"  - {ing.get('item_name')}: {ing.get('quantity')} {ing.get('unit', 'pcs')}")
-        if packaging:
-            lines.append("Packaging:")
-            for pkg in packaging:
-                lines.append(f"  - {pkg.get('item_name')}: {pkg.get('quantity')} {pkg.get('unit', 'pcs')}")
+        """Build agent instruction from extracted recipe data."""
+        lines = [
+            "I scanned a recipe image. Please create this recipe:",
+            f"Name: {result.get('name', 'Unknown')}",
+            f"Yield per batch: {result.get('yield_per_batch') or 1}",
+        ]
+        for ing in result.get("ingredients", []):
+            lines.append(f"  Ingredient — {ing.get('item_name')}: {ing.get('quantity')} {ing.get('unit', 'pcs')}")
+        for pkg in result.get("packaging", []):
+            lines.append(f"  Packaging — {pkg.get('item_name')}: {pkg.get('quantity')} {pkg.get('unit', 'pcs')}")
         lines.append(
             "Create the recipe and add all components. "
             "For any missing inventory items, add them with cost 0 so the user can update later."
@@ -344,6 +389,7 @@ class RequestHandler:
         return "\n".join(lines)
 
     def _summarise_receipt(self, result: dict) -> str:
+        """Build agent instruction from extracted receipt data."""
         lines = ["I scanned a payment receipt."]
         if result.get("amount"):
             lines.append(f"Amount: ₹{result['amount']}")
@@ -357,6 +403,7 @@ class RequestHandler:
         return "\n".join(lines)
 
     def _summarise_order(self, result: dict) -> str:
+        """Build agent instruction from extracted order data."""
         lines = ["I scanned an order image. Please create this order:"]
         if result.get("customer_name"):
             lines.append(f"Customer: {result['customer_name']}")

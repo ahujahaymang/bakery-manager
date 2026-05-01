@@ -188,7 +188,7 @@ export class BakeryStack extends cdk.Stack {
       `TELEGRAM_BOT_TOKEN=$(aws ssm get-parameter --name ${ssmPrefix}/TELEGRAM_BOT_TOKEN --with-decryption --query Parameter.Value --output text)`,
       `LLM_API_KEY=$(aws ssm get-parameter --name ${ssmPrefix}/LLM_API_KEY --with-decryption --query Parameter.Value --output text)`,
       `ADMIN_CHAT_ID=$(aws ssm get-parameter --name ${ssmPrefix}/ADMIN_CHAT_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
-      `BAKERY_OWNER_CHAT_ID=$(aws ssm get-parameter --name ${ssmPrefix}/BAKERY_OWNER_CHAT_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
+      `OWNER_CHAT_ID=$(aws ssm get-parameter --name ${ssmPrefix}/OWNER_CHAT_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
 
       // Fetch RDS password if needed
       ...(dbEngine === 'rds' ? [
@@ -201,7 +201,7 @@ export class BakeryStack extends cdk.Stack {
       `LLM_API_KEY=$LLM_API_KEY`,
       `LLM_MODEL=gpt-4.1-nano`,
       `ADMIN_CHAT_ID=$ADMIN_CHAT_ID`,
-      `BAKERY_OWNER_CHAT_ID=$BAKERY_OWNER_CHAT_ID`,
+      `OWNER_CHAT_ID=$OWNER_CHAT_ID`,
       ...Object.entries({ ...backupEnv, ...rdsEnv }).map(([k, v]) => `${k}=${v}`),
       ...(dbEngine === 'rds' ? ['DB_PASSWORD=$DB_PASSWORD'] : []),
       'EOF',
