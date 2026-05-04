@@ -26,6 +26,9 @@ from app.services.backup_service import create_backup_service
 
 logger = logging.getLogger(__name__)
 
+# How long to wait for the agent before giving up (seconds)
+REQUEST_TIMEOUT = 90
+
 
 class TelegramBotListener:
     """Telegram adapter. Owns nothing except the Telegram connection."""
@@ -46,8 +49,18 @@ class TelegramBotListener:
         except Exception:
             await update.message.reply_text(text)
 
+    async def _edit(self, message, text: str):
+        """Edit an existing message with Markdown, fall back to plain text."""
+        try:
+            await message.edit_text(text, parse_mode="Markdown")
+        except Exception:
+            try:
+                await message.edit_text(text)
+            except Exception:
+                pass  # message may have been deleted or is unchanged
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Receive text → resolve tenant → delegate → reply."""
+        """Receive text → show thinking indicator → resolve tenant → delegate → reply."""
         try:
             if not update.message or not update.message.text:
                 return
@@ -56,28 +69,41 @@ class TelegramBotListener:
             text = update.message.text.strip()
             logger.info(f"Text from {chat_id}: {text}")
 
+            # Show "Thinking..." immediately so the user knows we're working
+            thinking_msg = await update.message.reply_text("💭 Thinking...")
+
             # Step 1: resolve tenant from the shared registry
             registry_db = next(get_registry_db())
             try:
                 tenant = TenantService(registry_db).get_or_create_tenant(chat_id)
-                tenant_id = tenant.tenant_id  # read before session closes
+                tenant_id = tenant.tenant_id
             finally:
                 registry_db.close()
 
-            # Step 2: open the tenant's own database for business operations
+            # Step 2: process with timeout
             db = next(get_db(tenant_id))
             try:
-                response = await self.handler.handle_text(db, tenant_id, chat_id, text)
-                await self._send(update, response)
+                try:
+                    response = await asyncio.wait_for(
+                        self.handler.handle_text(db, tenant_id, chat_id, text),
+                        timeout=REQUEST_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Request timed out for chat_id={chat_id}")
+                    response = (
+                        "⏱ That took too long to process. Please try again.\n"
+                        "If this keeps happening, try breaking your request into smaller steps."
+                    )
+
+                await self._edit(thinking_msg, response)
             finally:
                 db.close()
 
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
             try:
-                await update.message.reply_text(
-                    format_error_for_telegram(ErrorHandler.handle_exception(e))
-                )
+                error_msg = format_error_for_telegram(ErrorHandler.handle_exception(e))
+                await update.message.reply_text(error_msg)
             except Exception:
                 pass
 
@@ -100,21 +126,29 @@ class TelegramBotListener:
             registry_db = next(get_registry_db())
             try:
                 tenant = TenantService(registry_db).get_or_create_tenant(chat_id)
-                tenant_id = tenant.tenant_id  # read before session closes
+                tenant_id = tenant.tenant_id
             finally:
                 registry_db.close()
 
-            # Step 2: process image against tenant's database
+            # Step 2: process image with timeout
             db = next(get_db(tenant_id))
             try:
-                await update.message.reply_text("🔍 Processing image...")
+                thinking_msg = await update.message.reply_text("🔍 Processing image...")
 
-                response = await self.handler.handle_image(
-                    db, tenant_id, chat_id, photo_bytes, caption
-                )
+                try:
+                    response = await asyncio.wait_for(
+                        self.handler.handle_image(db, tenant_id, chat_id, photo_bytes, caption),
+                        timeout=REQUEST_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Image processing timed out for chat_id={chat_id}")
+                    response = (
+                        "⏱ Image processing took too long. Please try again.\n"
+                        "Make sure the image is clear and well-lit."
+                    )
 
                 if response is None:
-                    await self._send(update, (
+                    await self._edit(thinking_msg, (
                         "📸 I received your image!\n\n"
                         "Please add a caption to tell me what it is:\n"
                         "• *recipe* — handwritten or printed recipe\n"
@@ -122,7 +156,7 @@ class TelegramBotListener:
                         "• *order* — WhatsApp/SMS order screenshot"
                     ))
                 else:
-                    await self._send(update, response)
+                    await self._edit(thinking_msg, response)
             finally:
                 db.close()
 

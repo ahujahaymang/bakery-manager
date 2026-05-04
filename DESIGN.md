@@ -278,3 +278,4 @@ tests/                          # pytest test suite
 | **Multi-user access** | Allow multiple staff members to use the same bot with role-based permissions (owner vs. staff) |
 | **Auto WhatsApp sync** | Receive orders directly from WhatsApp messages without manual entry |
 | **Stripe integration** | Accept online payments, auto-reconcile with order records, send payment links to customers |
+| **Business name on tenant** | Add a `name` field to the Tenant model so admin view shows the business name instead of chat_id |
