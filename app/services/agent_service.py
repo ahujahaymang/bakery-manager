@@ -391,6 +391,27 @@ TOOLS = [
             "description": "Calculate this week's profit report",
             "parameters": {"type": "object", "properties": {}}
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_invoice",
+            "description": "Generate a PDF invoice for an order and send it to the user. Use when the user asks to create or send an invoice for a customer's order. delivery_date is optional — if omitted, uses the most recent order for that customer.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_identifier": {
+                        "type": "string",
+                        "description": "Customer name or phone number"
+                    },
+                    "delivery_date": {
+                        "type": "string",
+                        "description": "ISO date YYYY-MM-DD — optional, only needed if customer has multiple orders"
+                    }
+                },
+                "required": ["customer_identifier"]
+            }
+        }
     }
 ]
 
@@ -483,6 +504,10 @@ class AgentService:
                         result = f"Error: {str(e)}"
 
                     logger.info(f"Tool result: {result[:200] if len(str(result)) > 200 else result}")
+
+                    # Invoice PDF — return immediately without sending back to LLM
+                    if isinstance(result, str) and result.startswith("INVOICE_PDF:"):
+                        return result
 
                     messages.append({
                         "role": "tool",

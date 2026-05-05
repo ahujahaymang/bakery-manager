@@ -105,8 +105,46 @@ class _TenantEngineRegistry:
                 if key not in self._engines:
                     db_path = self._dir / f"{key}.db"
                     logger.info(f"Opening SQLite database for tenant {key}: {db_path}")
-                    self._engines[key] = _build_sqlite_engine(str(db_path))
+                    engine = _build_sqlite_engine(str(db_path))
+                    self._engines[key] = engine
+                    # Seed the tenant row so FK constraints pass in the business DB
+                    self._seed_tenant_row(engine, tenant_id)
         return self._engines[key]
+
+    def _seed_tenant_row(self, engine: Engine, tenant_id: UUID) -> None:
+        """
+        Insert the tenant's own row into the business database.
+
+        The business DB has a tenants table (created by Base.metadata.create_all)
+        but it starts empty. FK constraints on customers, orders, etc. require
+        the tenant row to exist. We insert it here on first access.
+        """
+        from sqlalchemy.orm import sessionmaker
+        from datetime import datetime
+
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        try:
+            # Check if already seeded (e.g. existing DB being re-opened after restart)
+            result = session.execute(
+                __import__('sqlalchemy').text("SELECT COUNT(*) FROM tenants WHERE tenant_id = :tid"),
+                {"tid": str(tenant_id)}
+            ).scalar()
+            if result == 0:
+                session.execute(
+                    __import__('sqlalchemy').text(
+                        "INSERT INTO tenants (tenant_id, chat_id, created_at, updated_at) "
+                        "VALUES (:tid, :cid, :now, :now)"
+                    ),
+                    {"tid": str(tenant_id), "cid": str(tenant_id), "now": datetime.utcnow()}
+                )
+                session.commit()
+                logger.info(f"Seeded tenant row in business DB for {tenant_id}")
+        except Exception as e:
+            session.rollback()
+            logger.warning(f"Could not seed tenant row: {e}")
+        finally:
+            session.close()
 
     def db_path(self, tenant_id: UUID) -> str:
         """Return the filesystem path to a tenant's database file."""

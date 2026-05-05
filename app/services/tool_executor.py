@@ -446,3 +446,72 @@ class ToolExecutor:
             f"Packaging cost: ₹{report.total_packaging_cost:.2f}\n"
             f"Gross profit: ₹{report.gross_profit:.2f}"
         )
+
+    # ── Invoice ────────────────────────────────────────────────────────────
+
+    async def _tool_generate_invoice(self, args):
+        """
+        Generate a PDF invoice for an order.
+
+        Returns a special INVOICE: marker so RequestHandler knows to send
+        a file rather than a text message.
+        """
+        from app.services.invoice_service import InvoiceService
+        from app.services.order_finder import OrderFinder
+        from app.database import get_registry_db
+        from app.models import Tenant
+
+        customer_identifier = args["customer_identifier"]
+        delivery_date_str = args.get("delivery_date")
+
+        # Resolve customer
+        cust_svc = CustomerService(self.db)
+        customers = cust_svc.get_customer(self.tenant_id, customer_identifier)
+        if not customers:
+            return f"No customer found matching '{customer_identifier}'"
+        if len(customers) > 1:
+            names = ", ".join(f"{c.name} ({c.phone})" for c in customers)
+            return f"Multiple customers match: {names}. Please be more specific."
+
+        customer = customers[0]
+
+        # Resolve order — default to most recent if no delivery_date given
+        finder = OrderFinder(self.db)
+        if delivery_date_str:
+            order = finder.find_by_customer_and_date(
+                self.tenant_id, customer.customer_id, date.fromisoformat(delivery_date_str)
+            )
+            if not order:
+                return f"No order found for {customer.name} on {delivery_date_str}"
+        else:
+            orders = finder.find_by_customer(self.tenant_id, customer.customer_id)
+            if not orders:
+                return f"No orders found for {customer.name}"
+            if len(orders) > 1:
+                # Use most recent order automatically
+                order = sorted(orders, key=lambda o: o.delivery_date, reverse=True)[0]
+            else:
+                order = orders[0]
+
+        # Get business name and currency from registry
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == self.tenant_id).first()
+            business_name = tenant.business_name if tenant else "My Business"
+            from app.services.tenant_service import TenantService
+            currency = TenantService.currency_for_country(tenant.country or "india") if tenant else "Rs."
+        finally:
+            reg_db.close()
+
+        # Generate PDF
+        svc = InvoiceService()
+        invoice_data = svc.build_invoice_data(self.db, self.tenant_id, order.order_id, business_name, currency)
+        pdf_bytes = svc.generate(invoice_data)
+
+        filename = f"invoice_{invoice_data.invoice_number}_{customer.name.replace(' ', '_')}.pdf"
+
+        # Store PDF bytes for the handler to retrieve and send as a file
+        # Use a special return format the handler recognises
+        import base64
+        encoded = base64.b64encode(pdf_bytes).decode()
+        return f"INVOICE_PDF:{filename}:{encoded}"

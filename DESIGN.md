@@ -10,6 +10,11 @@ Built as a multi-tenant SaaS platform: one deployment can serve many independent
 
 ## Capabilities
 
+### Onboarding
+- First message triggers a two-step setup: business name → country
+- Country determines the currency used on invoices (India → Rs., US → $, UK → £, etc.)
+- Returning users go straight to the assistant
+
 ### Inventory
 - Add ingredients and packaging materials with quantity, unit, and cost
 - Update stock levels and costs
@@ -38,6 +43,12 @@ Built as a multi-tenant SaaS platform: one deployment can serve many independent
 - Record payments against orders (Cash, Paytm, Bank Transfer)
 - View payment history with date filters
 - See all orders with outstanding balances
+
+### Invoices
+- Generate a PDF invoice for any order with one message
+- Invoice includes business name, customer details, itemised list, totals, amount due
+- Currency shown based on the business's country setting
+- Sent as a downloadable PDF file directly in the chat
 
 ### Reports
 - Weekly profit breakdown: revenue, ingredient cost, packaging cost, gross profit
@@ -177,7 +188,7 @@ Tenant ──┬── Customer ──── Order ──┬── OrderItem ─
          └── AuditLog
 ```
 
-- **Tenant**: one per chat_id, isolates all data
+- **Tenant**: one per chat_id, isolates all data; stores business name and country
 - **Customer**: name + phone, unique per tenant
 - **InventoryItem**: ingredient or packaging, with quantity, unit, cost
 - **Recipe**: name + yield per batch, linked to inventory items via components
@@ -198,11 +209,25 @@ See the Database section above for deployment options and cost breakdown.
 
 Set `ADMIN_CHAT_ID` to your Telegram chat_id. As admin:
 - You skip the welcome screen
-- You operate on the owner's data directly
-- `/switch` lists all tenants (shared deployment)
-- `/switch <chat_id>` switches between tenants
+- You operate on the owner's data directly (shown as `Admin — <business name>`)
+- `/switch` lists all tenants with their business names
+- `/switch <chat_id>` switches between tenants and clears history
+- `/delete <chat_id>` permanently deletes a tenant's data (for deletion requests)
 
 For dedicated single-tenant deployments, set `OWNER_CHAT_ID` to the owner's chat_id — admin routes directly to their data without the owner needing to message first.
+
+---
+
+## Data Security
+
+- All data encrypted at rest (EBS AES-256, both root and data volumes)
+- All data encrypted in transit (TLS)
+- No public ports open on EC2 — SSH via SSM Session Manager only
+- Secrets stored in AWS SSM Parameter Store (KMS encrypted)
+- OpenAI API: inputs not used for training; retained max 30 days
+- Telegram: messages delivered to bot server, not stored long-term
+- Privacy policy: `PRIVACY_POLICY.md`
+- User data deletion: admin `/delete` command fulfils deletion requests
 
 ---
 
@@ -214,11 +239,12 @@ For dedicated single-tenant deployments, set `OWNER_CHAT_ID` to the owner's chat
 | Messaging | python-telegram-bot (polling mode) |
 | LLM | OpenAI GPT-4.1 nano (tool calling) |
 | Image processing | OpenAI GPT-4o Vision |
+| PDF generation | ReportLab (canvas API) |
 | ORM | SQLAlchemy 2.0 |
 | Migrations | Alembic |
-| Database | SQLite (dev/small) or PostgreSQL (production) |
+| Database | SQLite per-tenant (shared server) or PostgreSQL (production) |
 | Infrastructure | AWS CDK (TypeScript) |
-| Compute | EC2 t4g.nano (ARM, Graviton) |
+| Compute | EC2 t4g.nano/small (ARM, Graviton) |
 | Backup | S3 (SQLite snapshots via Python sqlite3 backup API) |
 | Config | pydantic-settings (.env file) |
 | Tests | pytest |
@@ -278,4 +304,3 @@ tests/                          # pytest test suite
 | **Multi-user access** | Allow multiple staff members to use the same bot with role-based permissions (owner vs. staff) |
 | **Auto WhatsApp sync** | Receive orders directly from WhatsApp messages without manual entry |
 | **Stripe integration** | Accept online payments, auto-reconcile with order records, send payment links to customers |
-| **Business name on tenant** | Add a `name` field to the Tenant model so admin view shows the business name instead of chat_id |

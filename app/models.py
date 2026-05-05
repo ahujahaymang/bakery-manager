@@ -79,13 +79,15 @@ class PortableJSON(TypeDecorator):
 
 class Tenant(Base):
     """
-    Tenant model representing a bakery organization.
+    Tenant model representing a business organization.
     Each tenant is isolated and identified by a unique Telegram chat_id.
     """
     __tablename__ = "tenants"
-    
+
     tenant_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
     chat_id = Column(String, unique=True, nullable=False, index=True)
+    business_name = Column(String, nullable=True)  # set during onboarding
+    country = Column(String, nullable=True)         # e.g. "India", "US" — determines currency
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     

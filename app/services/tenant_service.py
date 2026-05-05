@@ -119,3 +119,47 @@ class TenantService:
         return self.db.query(Tenant).filter(
             Tenant.tenant_id == tenant_id
         ).first()
+
+    def set_business_name(self, tenant_id, business_name: str) -> Tenant:
+        """Set or update the business name for a tenant."""
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        tenant.business_name = business_name.strip()
+        self.db.commit()
+        self.db.refresh(tenant)
+        return tenant
+
+    def set_country(self, tenant_id, country: str) -> Tenant:
+        """Set or update the country for a tenant."""
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        tenant.country = country.strip()
+        self.db.commit()
+        self.db.refresh(tenant)
+        return tenant
+
+    @staticmethod
+    def currency_for_country(country: str) -> str:
+        """
+        Return the currency symbol/prefix for a given country name.
+        Defaults to 'Rs.' for unrecognised countries.
+        """
+        mapping = {
+            # India
+            "india": "Rs.",
+            # United States
+            "us": "$", "usa": "$", "united states": "$", "america": "$",
+            # United Kingdom
+            "uk": "£", "united kingdom": "$", "britain": "£",
+            # European Union
+            "eu": "€", "europe": "€", "germany": "€", "france": "€",
+            "italy": "€", "spain": "€", "netherlands": "€",
+            # Others
+            "canada": "CA$",
+            "australia": "A$",
+            "uae": "AED",
+            "singapore": "S$",
+        }
+        return mapping.get(country.lower().strip(), "Rs.")

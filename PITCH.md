@@ -108,6 +108,12 @@ Every transaction is recorded as it happens. Your financial history is always th
 - See full payment history
 - Know exactly who still owes you
 
+### Invoices
+- Generate a professional PDF invoice for any order
+- Just say *"send invoice to Priya"* — the bot creates and sends it instantly
+- Includes your business name, customer details, itemised list, and amount due
+- Currency matches your country (₹ for India, $ for US, £ for UK, etc.)
+
 ### Reports
 - Weekly profit breakdown
 - Revenue vs. costs at a glance

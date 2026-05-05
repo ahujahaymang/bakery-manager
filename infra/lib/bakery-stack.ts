@@ -250,6 +250,14 @@ export class BakeryStack extends cdk.Stack {
       userData,
       // Prevent accidental termination
       disableApiTermination: true,
+      // Encrypt root volume at rest
+      blockDevices: [{
+        deviceName: '/dev/xvda',
+        volume: ec2.BlockDeviceVolume.ebs(20, {
+          volumeType: ec2.EbsDeviceVolumeType.GP3,
+          encrypted: true,
+        }),
+      }],
     });
 
     // ── EBS data volume (SQLite only) ─────────────────────────────────────

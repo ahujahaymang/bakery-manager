@@ -47,6 +47,12 @@ class RequestHandler:
         # Admin tenant override: {admin_chat_id: tenant_id}
         self._admin_target: Dict[str, UUID] = {}
 
+    # Per-chat onboarding state: tracks chats awaiting business name input
+    # {chat_id: True}  — simple flag, no expiry needed (cleared on name save)
+    _awaiting_business_name: Dict[str, bool] = {}
+    # {chat_id: True} — waiting for country after business name
+    _awaiting_country: Dict[str, bool] = {}
+
     # ── History ────────────────────────────────────────────────────────────
 
     def _get_history(self, chat_id: str) -> List[dict]:
@@ -66,15 +72,20 @@ class RequestHandler:
         """
         Process a text message and return the agent's response.
 
-        Handles three cases in order:
-        1. Admin /switch command — list or switch active tenant
-        2. Admin message — route to configured tenant, prefix response with label
-        3. New user (no history) — return welcome message
-        4. Regular message — run agent with conversation history
+        Onboarding flow for new users:
+        1. First message → ask for business name
+        2. Business name reply → save it, show capabilities
+
+        Admin flow:
+        - /switch command → list or switch active tenant
+        - Other messages → route to configured tenant with label
+
+        Regular flow:
+        - Run agent with conversation history
 
         Args:
-            db: Database session
-            tenant_id: Tenant UUID resolved from chat_id (may be overridden for admin)
+            db: Database session (tenant's business DB)
+            tenant_id: Tenant UUID
             chat_id: Unique conversation identifier
             text: User's message text
 
@@ -84,10 +95,106 @@ class RequestHandler:
         if self._is_admin(chat_id):
             return await self._handle_admin_message(db, tenant_id, chat_id, text)
 
-        if not self._get_history(chat_id):
-            return self._first_contact_message()
+        # Privacy command — available to all users at any time
+        if text.lower() in ("/privacy", "privacy policy", "data privacy"):
+            return (
+                "🔒 *Your data is private and secure.*\n\n"
+                "• Your business data is stored in an encrypted private database\n"
+                "• Your data is never shared with other businesses or sold to advertisers\n"
+                "• Messages are processed by OpenAI to understand your requests — OpenAI does not train on API data\n"
+                "• You can request deletion of all your data at any time\n\n"
+                "To request account deletion, contact us and we will process it within 7 days."
+            )
+
+        # Step 1: brand new user — no history, no business name set yet
+        if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
+            # Check if they already have a business name (returning user after bot restart)
+            already_named = await self._get_business_name(tenant_id)
+            if already_named:
+                # Returning user — seed history with a context note and go straight to agent
+                self._append(chat_id, "assistant", f"Welcome back, {already_named}!")
+            else:
+                self._awaiting_business_name[chat_id] = True
+                return (
+                    "👋 Welcome! I'm your business operations assistant.\n\n"
+                    "Before we get started — *what's the name of your business?*\n\n"
+                    "_(e.g. Priya's Kitchen, Sweet Treats by Meena)_"
+                )
+
+        # Step 2: awaiting business name — save it and ask for country
+        if chat_id in self._awaiting_business_name:
+            return await self._save_business_name(db, tenant_id, chat_id, text)
+
+        # Step 3: awaiting country — save it and show capabilities
+        if chat_id in self._awaiting_country:
+            return await self._complete_onboarding(db, tenant_id, chat_id, text)
 
         return await self._run_agent(db, tenant_id, chat_id, text)
+
+    async def _get_business_name(self, tenant_id: UUID) -> Optional[str]:
+        """Look up the business name for a tenant from the registry. Returns None if not set."""
+        from app.models import Tenant
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+            return tenant.business_name if tenant and tenant.business_name else None
+        except Exception:
+            return None
+        finally:
+            reg_db.close()
+
+    async def _save_business_name(
+        self, db, tenant_id: UUID, chat_id: str, business_name: str
+    ) -> str:
+        """Save business name and ask for country."""
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            TenantService(reg_db).set_business_name(tenant_id, business_name)
+        finally:
+            reg_db.close()
+
+        del self._awaiting_business_name[chat_id]
+        self._awaiting_country[chat_id] = True
+        self._append(chat_id, "user", business_name)
+
+        return (
+            f"Great! *{business_name.strip()}* is noted.\n\n"
+            "Which country are you based in?\n\n"
+            "_(This helps us use the right currency on invoices)_\n"
+            "Examples: India, US, UK, UAE, Canada, Australia"
+        )
+
+    async def _complete_onboarding(
+        self, db, tenant_id: UUID, chat_id: str, country: str
+    ) -> str:
+        """Save country and show the welcome/capabilities message."""
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            svc = TenantService(reg_db)
+            svc.set_country(tenant_id, country)
+            tenant = svc.get_tenant_by_id(tenant_id)
+            business_name = tenant.business_name or "your business"
+            currency = TenantService.currency_for_country(country)
+        finally:
+            reg_db.close()
+
+        del self._awaiting_country[chat_id]
+        self._append(chat_id, "user", country)
+
+        welcome = (
+            f"✅ All set! *{business_name}* is ready to go.\n"
+            f"Currency: *{currency}*\n\n"
+            + self._capabilities_message()
+        )
+        self._append(chat_id, "assistant", welcome)
+        return welcome
 
     async def handle_image(
         self,
@@ -144,14 +251,22 @@ class RequestHandler:
 
     async def _handle_admin_message(
         self, db, tenant_id: UUID, chat_id: str, text: str
-    ) -> str:
-        """Route admin messages: /switch command or regular agent call."""
+    ):
+        """Route admin messages: /switch, /delete commands or regular agent call."""
         if text.startswith("/switch"):
             return self._handle_switch_command(chat_id, text)
+
+        if text.startswith("/delete"):
+            return self._handle_delete_command(chat_id, text)
 
         active_tenant_id = self._resolve_admin_tenant(chat_id, tenant_id)
         label = self._admin_label(db, active_tenant_id)
         response = await self._run_agent(db, active_tenant_id, chat_id, text)
+
+        # File response (e.g. invoice PDF) — pass through as-is, no label prefix
+        if isinstance(response, tuple):
+            return response
+
         return f"_{label}_\n\n{response}"
 
     def _resolve_admin_tenant(self, admin_chat_id: str, fallback_tenant_id: UUID) -> UUID:
@@ -206,7 +321,10 @@ class RequestHandler:
         reg_db = next(get_registry_db())
         try:
             tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
-            return f"Admin view — tenant {tenant.chat_id}" if tenant else "Admin view"
+            if not tenant:
+                return "Admin view"
+            label = tenant.business_name or tenant.chat_id
+            return f"Admin — {label}"
         finally:
             reg_db.close()
 
@@ -247,10 +365,78 @@ class RequestHandler:
             current = self._admin_target.get(admin_chat_id)
             lines = ["*Available tenants:*\n"]
             for t in tenants:
+                name = t.business_name or t.chat_id
                 marker = " ← current" if current == t.tenant_id else ""
-                lines.append(f"• `{t.chat_id}`{marker}")
+                lines.append(f"• {name} (`{t.chat_id}`){marker}")
             lines.append("\nUse `/switch <chat_id>` to switch.")
+            lines.append("Use `/delete <chat_id>` to delete a tenant's data.")
             return "\n".join(lines)
+        finally:
+            reg_db.close()
+
+    def _handle_delete_command(self, admin_chat_id: str, text: str) -> str:
+        """
+        Handle /delete <chat_id> command.
+
+        Permanently deletes a tenant's database file and removes them from
+        the registry. Used to fulfil user data deletion requests.
+
+        /delete          → show usage
+        /delete <id>     → delete that tenant's data
+        """
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            return (
+                "Usage: `/delete <chat_id>`\n\n"
+                "This permanently deletes the tenant's database and removes them "
+                "from the registry. Use `/switch` to see available tenants."
+            )
+
+        target_chat_id = parts[1].strip()
+
+        from app.models import Tenant
+        from app.database import get_registry_db, get_tenant_db_path
+        import os
+
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
+            if not tenant:
+                return f"❌ No tenant found with chat_id `{target_chat_id}`"
+
+            name = tenant.business_name or target_chat_id
+            tenant_id = tenant.tenant_id
+
+            # Delete the tenant's database file
+            db_path = get_tenant_db_path(tenant_id)
+            deleted_db = False
+            if db_path and os.path.exists(db_path):
+                os.remove(db_path)
+                # Also remove WAL and SHM files if present
+                for ext in ["-wal", "-shm"]:
+                    p = db_path + ext
+                    if os.path.exists(p):
+                        os.remove(p)
+                deleted_db = True
+
+            # Remove from registry
+            reg_db.delete(tenant)
+            reg_db.commit()
+
+            # Clear any cached admin target pointing to this tenant
+            if self._admin_target.get(admin_chat_id) == tenant_id:
+                del self._admin_target[admin_chat_id]
+
+            logger.info(f"Admin deleted tenant {target_chat_id} ({name}), db_deleted={deleted_db}")
+            return (
+                f"✅ Tenant *{name}* (`{target_chat_id}`) has been deleted.\n"
+                f"Database file removed: {deleted_db}\n"
+                f"Registry entry removed: yes"
+            )
+        except Exception as e:
+            reg_db.rollback()
+            logger.error(f"Failed to delete tenant {target_chat_id}: {e}", exc_info=True)
+            return f"❌ Failed to delete tenant: {str(e)}"
         finally:
             reg_db.close()
 
@@ -263,19 +449,13 @@ class RequestHandler:
         chat_id: str,
         user_message: str,
         history_label: str = "",
-    ) -> str:
+    ) -> str | tuple:
         """
         Run the LLM agent with the current conversation history.
 
-        Args:
-            db: Database session
-            tenant_id: Tenant to operate on
-            chat_id: Conversation identifier (for history)
-            user_message: Message to send to the agent
-            history_label: Optional prefix for the history entry (e.g. "[Image: recipe]")
-
-        Returns:
-            Agent's response string
+        Returns either:
+        - str: a text response to send
+        - tuple(bytes, str): PDF bytes and filename to send as a document
         """
         executor = ToolExecutor(db, tenant_id)
         response = await self.agent.run(
@@ -285,35 +465,35 @@ class RequestHandler:
         )
         history_entry = f"{history_label} {user_message}".strip() if history_label else user_message
         self._append(chat_id, "user", history_entry)
+
+        # Check if the agent produced an invoice PDF
+        if isinstance(response, str) and response.startswith("INVOICE_PDF:"):
+            import base64
+            parts = response.split(":", 2)
+            filename = parts[1]
+            pdf_bytes = base64.b64decode(parts[2])
+            self._append(chat_id, "assistant", f"[Invoice PDF: {filename}]")
+            return pdf_bytes, filename
+
         self._append(chat_id, "assistant", response)
         return response
 
     # ── Welcome ────────────────────────────────────────────────────────────
 
-    def _first_contact_message(self) -> str:
-        """
-        Welcome message shown to every new user on first contact.
-        Explains all capabilities so they know what to ask for.
-        Seeded into history so the next message goes straight to the agent.
-        """
-        msg = (
-            "👋 *Welcome to Operations Bot!*\n\n"
-            "I'm your business assistant — just tell me what you need in plain language. "
-            "No commands to memorise.\n\n"
+    def _capabilities_message(self) -> str:
+        """Capabilities overview shown after onboarding completes."""
+        return (
+            "Here's what I can help you with — just ask in plain language:\n\n"
 
             "📦 *Inventory*\n"
             "• Add or update ingredients and packaging\n"
             "• Check stock levels\n"
-            "_'Add 5kg flour at ₹40/kg'_\n"
-            "_'How much sugar do I have?'_\n\n"
+            "_'Add 5kg flour at ₹40/kg'_\n\n"
 
             "📖 *Recipes*\n"
-            "• Create recipes with ingredients and packaging\n"
-            "• Calculate cost per unit\n"
+            "• Create recipes, calculate cost per unit\n"
             "• Edit or delete recipes\n"
-            "_'Create recipe Brownies yield 12'_\n"
-            "_'Show recipe Brownies'_\n"
-            "_'Add 100g butter to Brownies'_\n\n"
+            "_'Create recipe Brownies yield 12'_\n\n"
 
             "👥 *Customers*\n"
             "• Add and search customers\n"
@@ -321,14 +501,11 @@ class RequestHandler:
 
             "🛒 *Orders*\n"
             "• Create, cancel, or delete orders\n"
-            "• Mark orders as delivered\n"
-            "• View upcoming or unpaid orders\n"
-            "_'Order for Priya — 2 Brownies at ₹150 each, deliver May 10'_\n"
-            "_'Show unpaid orders'_\n\n"
+            "• Mark delivered, view upcoming or unpaid\n"
+            "_'Order for Priya — 2 Brownies at ₹150 each, deliver May 10'_\n\n"
 
             "💰 *Payments*\n"
-            "• Record payments against orders\n"
-            "• View payment history\n"
+            "• Record payments, view history\n"
             "_'Record ₹300 cash payment for Priya'_\n\n"
 
             "📊 *Reports*\n"
@@ -336,13 +513,10 @@ class RequestHandler:
             "_'Show this week\\'s profit'_\n\n"
 
             "📸 *Images*\n"
-            "• Send a photo of a handwritten recipe with caption *recipe*\n"
-            "• Send a payment receipt with caption *receipt*\n"
-            "• Send an order screenshot with caption *order*\n\n"
+            "• Send a photo of a recipe, receipt, or order screenshot\n\n"
 
             "What would you like to start with?"
         )
-        return msg
 
     # ── Image processing ───────────────────────────────────────────────────
 

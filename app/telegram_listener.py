@@ -95,7 +95,16 @@ class TelegramBotListener:
                         "If this keeps happening, try breaking your request into smaller steps."
                     )
 
-                await self._edit(thinking_msg, response)
+                # File response (e.g. invoice PDF)
+                if isinstance(response, tuple):
+                    pdf_bytes, filename = response
+                    await update.message.reply_document(
+                        document=pdf_bytes,
+                        filename=filename,
+                        caption="📄 Here's your invoice!",
+                    )
+                else:
+                    await self._edit(thinking_msg, response)
             finally:
                 db.close()
 
