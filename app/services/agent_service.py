@@ -444,14 +444,15 @@ Guidelines:
 
 class AgentService:
     """
-    LLM agent that uses tool calling to handle all bakery operations.
-    
-    The LLM decides what tools to call. No manual intent routing needed.
-    Conversation history provides context for follow-up messages like "replace" or "yes".
+    LLM agent that uses tool calling to handle all operations.
+
+    Uses Amazon Bedrock (Nova Lite) for the agent loop — cheap, fast, tool calling.
+    Image processing uses OpenAI GPT-4o via LLMService (separate client).
     """
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
-        self.llm_client = llm_client or LLMClient()
+    def __init__(self, llm_client=None):
+        from app.bedrock_client import BedrockClient
+        self.llm_client = llm_client or BedrockClient()
 
     async def run(
         self,

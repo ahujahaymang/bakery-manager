@@ -31,9 +31,16 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
 
     # ── LLM ───────────────────────────────────────────────────────────────
+    # OpenAI — used for image processing (GPT-4o vision)
     LLM_API_KEY: str = ""
     LLM_API_BASE_URL: str = "https://api.openai.com/v1"
-    LLM_MODEL: str = "gpt-4.1-nano"
+    LLM_MODEL: str = "gpt-4o-mini"  # vision model for image processing
+
+    # AWS Bedrock — used for agent/intent (Nova Lite)
+    BEDROCK_MODEL: str = "amazon.nova-lite-v1:0"
+    AWS_REGION: str = "us-east-1"
+    # Bedrock uses IAM credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars)
+    # or instance profile when running on EC2
 
     # ── S3 backup (SQLite only) ────────────────────────────────────────────
     S3_BACKUP_BUCKET: str = ""        # e.g. "my-ops-bot-backups"

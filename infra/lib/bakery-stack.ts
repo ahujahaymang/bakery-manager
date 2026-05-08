@@ -162,6 +162,12 @@ export class BakeryStack extends cdk.Stack {
       ],
     }));
 
+    // Allow EC2 to call Amazon Bedrock (Nova models for agent loop)
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+      resources: ['arn:aws:bedrock:*::foundation-model/amazon.nova-*'],
+    }));
+
     // ── EC2 user-data ─────────────────────────────────────────────────────
     const userData = ec2.UserData.forLinux();
     userData.addCommands(
@@ -239,11 +245,11 @@ export class BakeryStack extends cdk.Stack {
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
       instanceType: ec2.InstanceType.of(
-        ec2.InstanceClass.T4G,
-        ec2.InstanceSize.NANO,
+        ec2.InstanceClass.T3,
+        ec2.InstanceSize.MICRO,
       ),
       machineImage: ec2.MachineImage.latestAmazonLinux2023({
-        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
+        cpuType: ec2.AmazonLinuxCpuType.X86_64,
       }),
       securityGroup: appSg,
       role,
