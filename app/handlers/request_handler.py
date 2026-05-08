@@ -38,14 +38,18 @@ class RequestHandler:
     platform I/O: receiving messages, downloading files, sending replies.
     """
 
-    def __init__(self):
+    def __init__(self, instagram_listener=None, send_to_admin_fn=None):
         self.agent = AgentService()
         self.llm_service = LLMService()
         self.image_service = ImageService(self.llm_service)
+        self.instagram_listener = instagram_listener
+        self._send_to_admin = send_to_admin_fn
         # Per-chat message history: {chat_id: [{role, content}, ...]}
         self._history: Dict[str, List[dict]] = defaultdict(list)
         # Admin tenant override: {admin_chat_id: tenant_id}
         self._admin_target: Dict[str, UUID] = {}
+        # Pending admin notifications (new signups, etc.)
+        self._pending_admin_notifications: List[tuple] = []
 
     # Per-chat onboarding state: tracks chats awaiting business name input
     # {chat_id: True}  — simple flag, no expiry needed (cleared on name save)
@@ -93,6 +97,14 @@ class RequestHandler:
             Response string to deliver to the user
         """
         if self._is_admin(chat_id):
+            # Deliver any pending notifications first
+            if self._pending_admin_notifications and self._send_to_admin:
+                for target_chat_id, msg in self._pending_admin_notifications:
+                    try:
+                        await self._send_to_admin(target_chat_id, msg)
+                    except Exception:
+                        pass
+                self._pending_admin_notifications.clear()
             return await self._handle_admin_message(db, tenant_id, chat_id, text)
 
         # Privacy command — available to all users at any time
@@ -133,6 +145,12 @@ class RequestHandler:
         gate_response = await self._check_subscription(tenant_id, chat_id)
         if gate_response:
             return gate_response
+
+        # Instagram order confirmation — check before running agent
+        if self.instagram_listener and self.instagram_listener.has_pending_confirmation(chat_id):
+            result = await self.instagram_listener.handle_confirmation(chat_id, tenant_id, text)
+            if result is not None:
+                return result
 
         return await self._run_agent(db, tenant_id, chat_id, text)
 
@@ -193,23 +211,58 @@ class RequestHandler:
         del self._awaiting_country[chat_id]
         self._append(chat_id, "user", country)
 
-        # Start 7-day trial automatically after onboarding
-        from app.services.tenant_service import TenantService
-        from app.database import get_registry_db
-        reg_db2 = next(get_registry_db())
-        try:
-            TenantService(reg_db2).start_trial(tenant_id)
-        finally:
-            reg_db2.close()
+        # Do NOT auto-start trial — admin must approve first
+        # Notify admin that a new user has completed onboarding
+        await self._notify_admin_new_signup(tenant_id, business_name, country)
 
         welcome = (
-            f"✅ All set! *{business_name}* is ready to go.\n"
-            f"Currency: *{currency}*\n"
-            f"🎁 Your *7-day free trial* has started!\n\n"
-            + self._capabilities_message()
+            f"✅ *{business_name}* is registered!\n"
+            f"Currency: *{currency}*\n\n"
+            "Your account is pending approval. You'll receive a message once your "
+            "free trial is activated — usually within a few hours."
         )
         self._append(chat_id, "assistant", welcome)
         return welcome
+
+    async def _notify_admin_new_signup(
+        self, tenant_id: UUID, business_name: str, country: str
+    ) -> None:
+        """Notify admin of a new signup so they can approve the trial."""
+        if not settings.ADMIN_CHAT_ID:
+            return
+
+        from app.database import get_registry_db
+        from app.models import Tenant
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == tenant_id).first()
+            chat_id = tenant.chat_id if tenant else str(tenant_id)
+        finally:
+            reg_db.close()
+
+        msg = (
+            f"🆕 *New signup!*\n\n"
+            f"*Business:* {business_name}\n"
+            f"*Country:* {country}\n"
+            f"*Chat ID:* `{chat_id}`\n\n"
+            f"To start their 7-day trial:\n"
+            f"`/trial {chat_id}`\n\n"
+            f"To approve 30-day subscription:\n"
+            f"`/approve {chat_id} 30`"
+        )
+
+        # Store notification for admin — will be sent on next admin message
+        # or immediately if we have a send function available
+        if hasattr(self, '_send_to_admin') and self._send_to_admin:
+            try:
+                await self._send_to_admin(settings.ADMIN_CHAT_ID, msg)
+            except Exception as e:
+                logger.warning(f"Could not notify admin of new signup: {e}")
+        else:
+            # Store for delivery — admin will see it on next interaction
+            self._pending_admin_notifications.append(
+                (settings.ADMIN_CHAT_ID, msg)
+            )
 
     async def _check_subscription(self, tenant_id: UUID, chat_id: str) -> Optional[str]:
         """
@@ -478,9 +531,19 @@ class RequestHandler:
                         os.remove(p)
                 deleted_db = True
 
-            # Remove from registry
-            reg_db.delete(tenant)
-            reg_db.commit()
+            # Remove from registry — use raw SQL on a fresh connection to avoid
+            # ORM cascade trying to load related tables that don't exist in tenants.db
+            import sqlalchemy as sa
+            from app.database import get_registry_db as _get_reg
+            fresh_db = next(_get_reg())
+            try:
+                fresh_db.execute(
+                    sa.text("DELETE FROM tenants WHERE tenant_id = :tid"),
+                    {"tid": str(tenant_id)}
+                )
+                fresh_db.commit()
+            finally:
+                fresh_db.close()
 
             # Clear any cached admin target pointing to this tenant
             if self._admin_target.get(admin_chat_id) == tenant_id:
@@ -530,26 +593,40 @@ class RequestHandler:
             svc.activate_subscription(tenant.tenant_id, days)
             name = tenant.business_name or target_chat_id
             remaining = svc.days_remaining(tenant.tenant_id)
+
+            # Notify the owner their subscription is active
+            owner_msg = (
+                f"🎉 Great news, *{name}*!\n\n"
+                f"Your subscription is now *active* for {days} days.\n"
+                f"You have full access to all features.\n\n"
+                + self._capabilities_message()
+            )
+            if self._send_to_admin:
+                import asyncio
+                asyncio.create_task(self._send_to_admin(target_chat_id, owner_msg))
+
             return (
                 f"✅ *{name}* subscription activated!\n"
                 f"Days granted: {days}\n"
-                f"Total days remaining: {remaining}"
+                f"Total days remaining: {remaining}\n"
+                f"Owner has been notified."
             )
         finally:
             reg_db.close()
 
     def _handle_trial_command(self, admin_chat_id: str, text: str) -> str:
         """
-        /trial <chat_id>
+        /trial <chat_id> [days]
 
-        Reset a tenant's trial to a fresh 7 days.
-        Useful for extending trial for promising users.
+        Start or reset a tenant's trial. Default is TRIAL_DAYS (7).
+        Admin can override: /trial 6834633517 14
         """
-        parts = text.strip().split(maxsplit=1)
+        parts = text.strip().split()
         if len(parts) < 2:
-            return "Usage: `/trial <chat_id>`"
+            return "Usage: `/trial <chat_id> [days]`"
 
         target_chat_id = parts[1].strip()
+        custom_days = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else None
 
         from app.models import Tenant
         from app.services.tenant_service import TenantService
@@ -561,9 +638,28 @@ class RequestHandler:
             if not tenant:
                 return f"❌ No tenant found with chat_id `{target_chat_id}`"
             svc = TenantService(reg_db)
-            svc.start_trial(tenant.tenant_id)
+            if custom_days:
+                # Use activate_subscription for custom duration
+                svc.activate_subscription(tenant.tenant_id, custom_days)
+                trial_days = custom_days
+            else:
+                svc.start_trial(tenant.tenant_id)
+                trial_days = TenantService.TRIAL_DAYS
+            remaining = svc.days_remaining(tenant.tenant_id)
+
             name = tenant.business_name or target_chat_id
-            return f"✅ *{name}* trial reset — 7 days from now."
+
+            # Notify the owner their trial has started
+            owner_msg = (
+                f"🎉 Great news, *{name}*!\n\n"
+                f"Your *{trial_days}-day free trial* has started. You now have full access.\n\n"
+                + self._capabilities_message()
+            )
+            if self._send_to_admin:
+                import asyncio
+                asyncio.create_task(self._send_to_admin(target_chat_id, owner_msg))
+
+            return f"✅ *{name}* trial started — {remaining} days remaining. Owner has been notified."
         finally:
             reg_db.close()
 
@@ -648,6 +744,26 @@ class RequestHandler:
             self._append(chat_id, "assistant", f"[Invoice PDF: {filename}]")
             return pdf_bytes, filename
 
+        # Check if the agent produced an Instagram connect URL
+        if isinstance(response, str) and response.startswith("INSTAGRAM_CONNECT_URL:"):
+            url = response.split(":", 1)[1]
+            if url == "NOT_CONFIGURED":
+                msg = (
+                    "📱 *Instagram Integration*\n\n"
+                    "This feature is not enabled yet. "
+                    "We'll notify you as soon as it's available!"
+                )
+            else:
+                msg = (
+                    "📱 *Connect your Instagram account*\n\n"
+                    "Tap the link below to connect your Instagram. "
+                    "Once connected, I'll monitor your DMs and automatically detect orders.\n\n"
+                    f"🔗 [Connect Instagram]({url})\n\n"
+                    "_The link opens in your browser. After connecting, come back here._"
+                )
+            self._append(chat_id, "assistant", msg)
+            return msg
+
         self._append(chat_id, "assistant", response)
         return response
 
@@ -687,6 +803,9 @@ class RequestHandler:
 
             "📸 *Images*\n"
             "• Send a photo of a recipe, receipt, or order screenshot\n\n"
+
+            "📱 *Instagram*\n"
+            "• Say *connect instagram* to auto-detect orders from your DMs\n\n"
 
             "What would you like to start with?"
         )

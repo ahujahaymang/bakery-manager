@@ -49,15 +49,29 @@ class ToolExecutor:
 
     async def _tool_create_customer(self, args):
         svc = CustomerService(self.db)
-        c = svc.create_customer(self.tenant_id, args["name"], args["phone"])
-        return f"Customer created: {c.name} ({c.phone})"
+        c = svc.create_customer(
+            self.tenant_id,
+            args["name"],
+            args["phone"],
+            address=args.get("address")
+        )
+        result = f"Customer created: {c.name} ({c.phone})"
+        if c.address:
+            result += f"\nDefault address: {c.address}"
+        return result
 
     async def _tool_get_customer(self, args):
         svc = CustomerService(self.db)
         customers = svc.get_customer(self.tenant_id, args["search"])
         if not customers:
             return f"No customer found matching '{args['search']}'"
-        return "\n".join(f"{c.name} ({c.phone})" for c in customers)
+        lines = []
+        for c in customers:
+            line = f"{c.name} ({c.phone})"
+            if c.address:
+                line += f" — default address: {c.address}"
+            lines.append(line)
+        return "\n".join(lines)
 
     async def _tool_list_customers(self, args):
         svc = CustomerService(self.db)
@@ -243,14 +257,17 @@ class ToolExecutor:
             OrderCreate(
                 customer_identifier=args["customer_identifier"],
                 delivery_date=date.fromisoformat(args["delivery_date"]),
-                items=items
+                items=items,
+                delivery_address=args.get("delivery_address")
             )
         )
         lines = [
             f"Order created for delivery on {order.delivery_date}",
             f"Status: {order.status}",
-            "Items:"
         ]
+        if order.delivery_address:
+            lines.append(f"Delivery address: {order.delivery_address}")
+        lines.append("Items:")
         for item in items:
             lines.append(f"  {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}")
 
@@ -433,6 +450,24 @@ class ToolExecutor:
         for p in payments:
             lines.append(f"{p['customer_name']}: ₹{p['amount']} via {p['method']} on {p['payment_date']}")
         return "\n".join(lines)
+
+    # ── Instagram ──────────────────────────────────────────────────────────
+
+    async def _tool_connect_instagram(self, args):
+        """Generate an Instagram OAuth link for the owner to connect their account."""
+        from app.config import settings
+
+        if not settings.META_APP_ID or not settings.META_REDIRECT_URI:
+            # Meta not configured — show setup instructions
+            return (
+                "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
+            )
+
+        connect_url = (
+            f"{settings.WEBHOOK_URL or 'https://yourdomain.com'}"
+            f"/instagram/connect?tenant_id={self.tenant_id}"
+        )
+        return f"INSTAGRAM_CONNECT_URL:{connect_url}"
 
     # ── Reporting ──────────────────────────────────────────────────────────
 

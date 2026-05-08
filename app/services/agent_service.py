@@ -24,12 +24,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_customer",
-            "description": "Add a new customer",
+            "description": "Add a new customer. Always ask if they have a default delivery address — it's optional but useful for orders.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
-                    "phone": {"type": "string"}
+                    "phone": {"type": "string"},
+                    "address": {"type": "string", "description": "Default delivery address (optional)"}
                 },
                 "required": ["name", "phone"]
             }
@@ -266,12 +267,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "create_order",
-            "description": "Create a new order for a customer",
+            "description": "Create a new order for a customer. Always check if the customer has a default address. If they do, confirm it or ask for a different one. If they don't, ask where to deliver.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "customer_identifier": {"type": "string", "description": "Customer name or phone"},
                     "delivery_date": {"type": "string", "description": "ISO date YYYY-MM-DD"},
+                    "delivery_address": {"type": "string", "description": "Delivery address for this order (optional if customer has a default)"},
                     "items": {
                         "type": "array",
                         "items": {
@@ -395,6 +397,14 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "connect_instagram",
+            "description": "Generate an Instagram connection link for the owner. Use when the owner says they want to connect Instagram, link their account, or receive orders from Instagram DMs.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_invoice",
             "description": "Generate a PDF invoice for an order and send it to the user. Use when the user asks to create or send an invoice for a customer's order. delivery_date is optional — if omitted, uses the most recent order for that customer.",
             "parameters": {
@@ -507,6 +517,10 @@ class AgentService:
 
                     # Invoice PDF — return immediately without sending back to LLM
                     if isinstance(result, str) and result.startswith("INVOICE_PDF:"):
+                        return result
+
+                    # Instagram connect URL — return immediately
+                    if isinstance(result, str) and result.startswith("INSTAGRAM_CONNECT_URL:"):
                         return result
 
                     messages.append({

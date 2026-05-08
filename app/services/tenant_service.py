@@ -7,6 +7,7 @@ Telegram chat_id is mapped to a unique tenant with proper data isolation.
 
 from typing import Optional
 from uuid import UUID
+from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -136,6 +137,24 @@ class TenantService:
         if not tenant:
             raise ValueError(f"Tenant not found: {tenant_id}")
         tenant.country = country.strip()
+        self.db.commit()
+        self.db.refresh(tenant)
+        return tenant
+
+    def set_messaging_platform(self, tenant_id, platform: str) -> Tenant:
+        """
+        Set the primary messaging platform for a tenant.
+        Instagram order notifications will be sent via this platform.
+
+        Args:
+            platform: "telegram" or "whatsapp"
+        """
+        if platform not in ("telegram", "whatsapp"):
+            raise ValueError("platform must be 'telegram' or 'whatsapp'")
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        tenant.messaging_platform = platform
         self.db.commit()
         self.db.refresh(tenant)
         return tenant

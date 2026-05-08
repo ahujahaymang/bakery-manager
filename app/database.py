@@ -133,8 +133,8 @@ class _TenantEngineRegistry:
             if result == 0:
                 session.execute(
                     __import__('sqlalchemy').text(
-                        "INSERT INTO tenants (tenant_id, chat_id, created_at, updated_at) "
-                        "VALUES (:tid, :cid, :now, :now)"
+                        "INSERT INTO tenants (tenant_id, chat_id, subscription_status, created_at, updated_at) "
+                        "VALUES (:tid, :cid, 'pending', :now, :now)"
                     ),
                     {"tid": str(tenant_id), "cid": str(tenant_id), "now": datetime.utcnow()}
                 )

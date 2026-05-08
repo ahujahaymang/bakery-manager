@@ -12,6 +12,7 @@ No business logic here.
 
 import asyncio
 import logging
+import threading
 from typing import Optional
 
 from telegram import Update
@@ -23,6 +24,7 @@ from app.handlers.request_handler import RequestHandler
 from app.error_handler import ErrorHandler, format_error_for_telegram
 from app.config import settings
 from app.services.backup_service import create_backup_service
+from app.instagram_listener import InstagramListener
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +40,41 @@ class TelegramBotListener:
         if not self.bot_token:
             raise ValueError("TELEGRAM_BOT_TOKEN must be configured")
 
-        self.handler = RequestHandler()
+        self.instagram = InstagramListener(notify_owner_fn=self._send_to_chat)
+        self.handler = RequestHandler(
+            instagram_listener=self.instagram,
+            send_to_admin_fn=self._send_to_chat
+        )
         self.application = None
         self.backup = create_backup_service()
+
+    def _start_webhook_server(self):
+        """Start the FastAPI webhook server in a background thread."""
+        from app.webhook_server import app as webhook_app, register_instagram
+        register_instagram(self.instagram)
+
+        import uvicorn
+
+        def run():
+            uvicorn.run(webhook_app, host="0.0.0.0", port=8000, log_level="warning")
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        logger.info("Webhook server started on port 8000")
+
+    async def _send_to_chat(self, chat_id: str, message: str):
+        """Send a message to a specific chat_id (used by Instagram listener)."""
+        try:
+            await self.application.bot.send_message(
+                chat_id=int(chat_id),
+                text=message,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            try:
+                await self.application.bot.send_message(chat_id=int(chat_id), text=message)
+            except Exception as e:
+                logger.error(f"Failed to send notification to {chat_id}: {e}")
 
     async def _send(self, update: Update, text: str):
         """Send with Markdown, fall back to plain text."""
@@ -181,6 +215,14 @@ class TelegramBotListener:
     async def start(self):
         logger.info("Starting Telegram bot in polling mode...")
         self.application = Application.builder().token(self.bot_token).build()
+
+        # Wire send function now that application exists
+        self.instagram.notify_owner = self._send_to_chat
+        self.handler._send_to_admin = self._send_to_chat
+
+        # Start webhook server in background thread (for Instagram/WhatsApp webhooks)
+        self._start_webhook_server()
+
         self.application.add_handler(
             MessageHandler(filters.TEXT, self.handle_message)
         )

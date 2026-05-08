@@ -35,69 +35,40 @@ class CustomerService:
         self,
         tenant_id: UUID,
         name: str,
-        phone: str
+        phone: str,
+        address: str = None
     ) -> Customer:
-        """
-        Create a new customer with validation.
-        
-        Validates that name and phone are provided, checks for duplicate
-        phone numbers within the tenant, and creates the customer record.
-        
-        Args:
-            tenant_id: UUID of the tenant
-            name: Customer name
-            phone: Customer phone number
-        
-        Returns:
-            Customer: The newly created customer
-        
-        Raises:
-            ValueError: If name or phone is missing, or if phone already exists
-        
-        Requirements:
-            - 2.2: Validate that both name and phone number are provided
-            - 2.3: Request missing information if name or phone is missing
-            - 2.4: Check if phone number already exists for the Tenant
-            - 2.5: Return error message for duplicate customer
-            - 2.6: Create Customer record with all required fields
-            - 2.7: Confirm customer was added
-        """
-        # Validate required fields
+        """Create a new customer with optional address."""
         if not name or not name.strip():
             raise ValueError("Customer name is required")
-        
         if not phone or not phone.strip():
             raise ValueError("Customer phone number is required")
-        
-        # Clean inputs
+
         name = name.strip()
         phone = phone.strip()
-        
-        # Check for duplicate phone number
+
         existing_customer = self.db.query(Customer).filter(
             Customer.tenant_id == tenant_id,
             Customer.phone == phone
         ).first()
-        
         if existing_customer:
             raise ValueError(
                 f"A customer with phone number {phone} already exists: {existing_customer.name}"
             )
-        
-        # Create customer
+
         try:
             customer = Customer(
                 tenant_id=tenant_id,
                 name=name,
-                phone=phone
+                phone=phone,
+                address=address.strip() if address else None
             )
             self.db.add(customer)
             self.db.commit()
             self.db.refresh(customer)
             return customer
-        except IntegrityError as e:
+        except IntegrityError:
             self.db.rollback()
-            # Handle race condition where another process created the customer
             existing = self.db.query(Customer).filter(
                 Customer.tenant_id == tenant_id,
                 Customer.phone == phone
@@ -107,6 +78,16 @@ class CustomerService:
                     f"A customer with phone number {phone} already exists: {existing.name}"
                 )
             raise
+
+    def update_customer_address(self, tenant_id: UUID, customer_id: UUID, address: str) -> Customer:
+        """Update the default delivery address for a customer."""
+        customer = self.get_customer_by_id(tenant_id, customer_id)
+        if not customer:
+            raise ValueError("Customer not found")
+        customer.address = address.strip() if address else None
+        self.db.commit()
+        self.db.refresh(customer)
+        return customer
     
     def get_customer(
         self,

@@ -32,6 +32,7 @@ class OrderCreate:
     customer_identifier: str  # name or phone
     delivery_date: date
     items: List[OrderItemCreate]
+    delivery_address: str = None  # overrides customer's default address if provided
 
 
 class OrderService:
@@ -185,11 +186,14 @@ class OrderService:
                 'selling_price': selling_price
             })
         
-        # Create order
+        # Create order — use provided address or fall back to customer's default
+        delivery_address = order.delivery_address or customer.address
+
         new_order = Order(
             tenant_id=tenant_id,
             customer_id=customer.customer_id,
             delivery_date=order.delivery_date,
+            delivery_address=delivery_address,
             status="pending"
         )
         self.db.add(new_order)
@@ -339,6 +343,7 @@ class OrderService:
                 'customer_name': customer.name if customer else "Unknown",
                 'customer_phone': customer.phone if customer else "Unknown",
                 'delivery_date': order.delivery_date,
+                'delivery_address': order.delivery_address,
                 'items': items_list,
                 'total_price': total_price,
                 'created_at': order.created_at

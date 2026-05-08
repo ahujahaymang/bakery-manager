@@ -99,16 +99,24 @@ class Tenant(Base):
     trial_started_at = Column(DateTime, nullable=True)
     subscription_expires_at = Column(DateTime, nullable=True)
 
+    # Instagram integration (optional)
+    instagram_account_id = Column(String, nullable=True)    # Instagram user/page ID
+    instagram_access_token = Column(String, nullable=True)  # long-lived access token
+
+    # Primary messaging platform: "telegram" | "whatsapp"
+    # Instagram order notifications are sent via this platform
+    messaging_platform = Column(String, nullable=False, default="telegram")
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
-    # Relationships
-    customers = relationship("Customer", back_populates="tenant", cascade="all, delete-orphan")
-    inventory_items = relationship("InventoryItem", back_populates="tenant", cascade="all, delete-orphan")
-    recipes = relationship("Recipe", back_populates="tenant", cascade="all, delete-orphan")
-    orders = relationship("Order", back_populates="tenant", cascade="all, delete-orphan")
-    payments = relationship("Payment", back_populates="tenant", cascade="all, delete-orphan")
-    audit_logs = relationship("AuditLog", back_populates="tenant", cascade="all, delete-orphan")
+    # Relationships (used when operating on a tenant's own business DB)
+    customers = relationship("Customer", back_populates="tenant")
+    inventory_items = relationship("InventoryItem", back_populates="tenant")
+    recipes = relationship("Recipe", back_populates="tenant")
+    orders = relationship("Order", back_populates="tenant")
+    payments = relationship("Payment", back_populates="tenant")
+    audit_logs = relationship("AuditLog", back_populates="tenant")
 
 
 class Customer(Base):
@@ -122,6 +130,7 @@ class Customer(Base):
     tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     name = Column(String, nullable=False)
     phone = Column(String, nullable=False)
+    address = Column(String, nullable=True)  # optional default delivery address
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
@@ -206,7 +215,7 @@ class RecipeComponent(Base):
 class Order(Base):
     """
     Order model representing customer orders.
-    Tracks delivery date and status (pending or delivered).
+    Tracks delivery date, delivery address, and status.
     """
     __tablename__ = "orders"
     
@@ -214,7 +223,8 @@ class Order(Base):
     tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     customer_id = Column(PortableUUID(), ForeignKey("customers.customer_id"), nullable=False, index=True)
     delivery_date = Column(Date, nullable=False)
-    status = Column(String, nullable=False, default="pending")  # "pending" or "delivered"
+    delivery_address = Column(String, nullable=True)  # specific address for this order
+    status = Column(String, nullable=False, default="pending")  # "pending", "delivered", "cancelled"
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     

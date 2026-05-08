@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     # App
     WEBHOOK_URL: str = ""
 
+    # Instagram / Meta
+    META_APP_ID: str = ""
+    META_APP_SECRET: str = ""
+    META_REDIRECT_URI: str = ""       # e.g. https://yourdomain.com/instagram/callback
+    INSTAGRAM_VERIFY_TOKEN: str = ""  # any secret string you choose
+
     @property
     def DATABASE_URL(self) -> str:
         if self.DB_ENGINE == "sqlite":
