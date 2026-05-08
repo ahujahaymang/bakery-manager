@@ -129,6 +129,11 @@ class RequestHandler:
         if chat_id in self._awaiting_country:
             return await self._complete_onboarding(db, tenant_id, chat_id, text)
 
+        # Subscription gate — check before running agent
+        gate_response = await self._check_subscription(tenant_id, chat_id)
+        if gate_response:
+            return gate_response
+
         return await self._run_agent(db, tenant_id, chat_id, text)
 
     async def _get_business_name(self, tenant_id: UUID) -> Optional[str]:
@@ -188,13 +193,62 @@ class RequestHandler:
         del self._awaiting_country[chat_id]
         self._append(chat_id, "user", country)
 
+        # Start 7-day trial automatically after onboarding
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+        reg_db2 = next(get_registry_db())
+        try:
+            TenantService(reg_db2).start_trial(tenant_id)
+        finally:
+            reg_db2.close()
+
         welcome = (
             f"✅ All set! *{business_name}* is ready to go.\n"
-            f"Currency: *{currency}*\n\n"
+            f"Currency: *{currency}*\n"
+            f"🎁 Your *7-day free trial* has started!\n\n"
             + self._capabilities_message()
         )
         self._append(chat_id, "assistant", welcome)
         return welcome
+
+    async def _check_subscription(self, tenant_id: UUID, chat_id: str) -> Optional[str]:
+        """
+        Check subscription status. Returns a blocking message if access is denied,
+        or None if access is allowed.
+        """
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            svc = TenantService(reg_db)
+            status = svc.check_and_update_status(tenant_id)
+
+            if status == "pending":
+                # Onboarding not complete — shouldn't reach here normally
+                return None
+
+            if status in ("trial", "active"):
+                days = svc.days_remaining(tenant_id)
+                # Warn when 2 days left in trial
+                if status == "trial" and days is not None and days <= 2:
+                    # Don't block, but append a warning to history so agent can mention it
+                    warning = f"⚠️ Your free trial ends in {days} day{'s' if days != 1 else ''}."
+                    if warning not in str(self._get_history(chat_id)):
+                        self._append(chat_id, "system", warning)
+                return None  # access allowed
+
+            if status == "expired":
+                return (
+                    "⏰ *Your free trial has ended.*\n\n"
+                    "To continue using the service, please contact us to subscribe.\n\n"
+                    "Your data is safe and will be available once you subscribe."
+                )
+
+        finally:
+            reg_db.close()
+
+        return None  # default allow
 
     async def handle_image(
         self,
@@ -252,12 +306,17 @@ class RequestHandler:
     async def _handle_admin_message(
         self, db, tenant_id: UUID, chat_id: str, text: str
     ):
-        """Route admin messages: /switch, /delete commands or regular agent call."""
+        """Route admin messages: /switch, /delete, /approve, /trial, /status or agent call."""
         if text.startswith("/switch"):
             return self._handle_switch_command(chat_id, text)
-
         if text.startswith("/delete"):
             return self._handle_delete_command(chat_id, text)
+        if text.startswith("/approve"):
+            return self._handle_approve_command(chat_id, text)
+        if text.startswith("/trial"):
+            return self._handle_trial_command(chat_id, text)
+        if text.startswith("/status"):
+            return self._handle_status_command(chat_id)
 
         active_tenant_id = self._resolve_admin_tenant(chat_id, tenant_id)
         label = self._admin_label(db, active_tenant_id)
@@ -328,7 +387,7 @@ class RequestHandler:
         finally:
             reg_db.close()
 
-    def _handle_switch_command(self, db, admin_chat_id: str, text: str) -> str:
+    def _handle_switch_command(self, admin_chat_id: str, text: str) -> str:
         parts = text.strip().split(maxsplit=1)
         if len(parts) < 2:
             return self._list_tenants(admin_chat_id)
@@ -437,6 +496,120 @@ class RequestHandler:
             reg_db.rollback()
             logger.error(f"Failed to delete tenant {target_chat_id}: {e}", exc_info=True)
             return f"❌ Failed to delete tenant: {str(e)}"
+        finally:
+            reg_db.close()
+
+    def _handle_approve_command(self, admin_chat_id: str, text: str) -> str:
+        """
+        /approve <chat_id> [days]
+
+        Activate a paid subscription for a tenant.
+        Default: 30 days. Can extend existing subscription.
+        """
+        parts = text.strip().split()
+        if len(parts) < 2:
+            return (
+                "Usage: `/approve <chat_id> [days]`\n"
+                "Example: `/approve 6834633517 30`\n"
+                "Default is 30 days if not specified."
+            )
+
+        target_chat_id = parts[1].strip()
+        days = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 30
+
+        from app.models import Tenant
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
+            if not tenant:
+                return f"❌ No tenant found with chat_id `{target_chat_id}`"
+            svc = TenantService(reg_db)
+            svc.activate_subscription(tenant.tenant_id, days)
+            name = tenant.business_name or target_chat_id
+            remaining = svc.days_remaining(tenant.tenant_id)
+            return (
+                f"✅ *{name}* subscription activated!\n"
+                f"Days granted: {days}\n"
+                f"Total days remaining: {remaining}"
+            )
+        finally:
+            reg_db.close()
+
+    def _handle_trial_command(self, admin_chat_id: str, text: str) -> str:
+        """
+        /trial <chat_id>
+
+        Reset a tenant's trial to a fresh 7 days.
+        Useful for extending trial for promising users.
+        """
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            return "Usage: `/trial <chat_id>`"
+
+        target_chat_id = parts[1].strip()
+
+        from app.models import Tenant
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            tenant = reg_db.query(Tenant).filter(Tenant.chat_id == target_chat_id).first()
+            if not tenant:
+                return f"❌ No tenant found with chat_id `{target_chat_id}`"
+            svc = TenantService(reg_db)
+            svc.start_trial(tenant.tenant_id)
+            name = tenant.business_name or target_chat_id
+            return f"✅ *{name}* trial reset — 7 days from now."
+        finally:
+            reg_db.close()
+
+    def _handle_status_command(self, admin_chat_id: str) -> str:
+        """
+        /status
+
+        Show all tenants with their subscription status and days remaining.
+        """
+        from app.models import Tenant
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            tenants = (
+                reg_db.query(Tenant)
+                .filter(Tenant.chat_id != admin_chat_id)
+                .order_by(Tenant.created_at)
+                .all()
+            )
+            if not tenants:
+                return "No tenants found yet."
+
+            svc = TenantService(reg_db)
+            lines = ["*Tenant Subscription Status:*\n"]
+            status_icons = {
+                "pending": "⏳",
+                "trial":   "🎁",
+                "active":  "✅",
+                "expired": "🔴",
+            }
+            for t in tenants:
+                # Auto-update expired status
+                status = svc.check_and_update_status(t.tenant_id)
+                days = svc.days_remaining(t.tenant_id)
+                icon = status_icons.get(status, "❓")
+                name = t.business_name or t.chat_id
+                days_str = f" ({days}d left)" if days is not None else ""
+                lines.append(f"{icon} *{name}* — {status}{days_str}")
+                lines.append(f"   `{t.chat_id}`")
+
+            lines.append("\nCommands:")
+            lines.append("`/approve <chat_id> [days]` — activate subscription")
+            lines.append("`/trial <chat_id>` — reset 7-day trial")
+            return "\n".join(lines)
         finally:
             reg_db.close()
 

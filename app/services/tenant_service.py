@@ -142,24 +142,87 @@ class TenantService:
 
     @staticmethod
     def currency_for_country(country: str) -> str:
-        """
-        Return the currency symbol/prefix for a given country name.
-        Defaults to 'Rs.' for unrecognised countries.
-        """
+        """Return the currency symbol/prefix for a given country name."""
         mapping = {
-            # India
             "india": "Rs.",
-            # United States
             "us": "$", "usa": "$", "united states": "$", "america": "$",
-            # United Kingdom
-            "uk": "£", "united kingdom": "$", "britain": "£",
-            # European Union
+            "uk": "£", "united kingdom": "£", "britain": "£",
             "eu": "€", "europe": "€", "germany": "€", "france": "€",
             "italy": "€", "spain": "€", "netherlands": "€",
-            # Others
             "canada": "CA$",
             "australia": "A$",
             "uae": "AED",
             "singapore": "S$",
         }
         return mapping.get(country.lower().strip(), "Rs.")
+
+    # ── Subscription management ────────────────────────────────────────────
+
+    TRIAL_DAYS = 7
+
+    def start_trial(self, tenant_id) -> Tenant:
+        """Start the 7-day free trial for a tenant."""
+        from datetime import timedelta
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        now = datetime.utcnow()
+        tenant.subscription_status = "trial"
+        tenant.trial_started_at = now
+        tenant.subscription_expires_at = now + timedelta(days=self.TRIAL_DAYS)
+        self.db.commit()
+        self.db.refresh(tenant)
+        return tenant
+
+    def activate_subscription(self, tenant_id, days: int = 30) -> Tenant:
+        """
+        Activate or extend a paid subscription.
+
+        Args:
+            tenant_id: Tenant UUID
+            days: Number of days to grant (default 30)
+        """
+        from datetime import timedelta
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        now = datetime.utcnow()
+        # Extend from current expiry if still active, otherwise from now
+        base = tenant.subscription_expires_at if (
+            tenant.subscription_expires_at and tenant.subscription_expires_at > now
+        ) else now
+        tenant.subscription_status = "active"
+        tenant.subscription_expires_at = base + timedelta(days=days)
+        self.db.commit()
+        self.db.refresh(tenant)
+        return tenant
+
+    def check_and_update_status(self, tenant_id) -> str:
+        """
+        Check subscription status, auto-expire if past expiry date.
+
+        Returns:
+            str: current status — "pending" | "trial" | "active" | "expired"
+        """
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            return "pending"
+
+        status = tenant.subscription_status
+
+        # Auto-expire if past expiry date
+        if status in ("trial", "active") and tenant.subscription_expires_at:
+            if datetime.utcnow() > tenant.subscription_expires_at:
+                tenant.subscription_status = "expired"
+                self.db.commit()
+                return "expired"
+
+        return status
+
+    def days_remaining(self, tenant_id) -> Optional[int]:
+        """Return days remaining in trial/subscription, or None if not applicable."""
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant or not tenant.subscription_expires_at:
+            return None
+        delta = tenant.subscription_expires_at - datetime.utcnow()
+        return max(0, delta.days)

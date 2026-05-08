@@ -182,7 +182,7 @@ class TelegramBotListener:
         logger.info("Starting Telegram bot in polling mode...")
         self.application = Application.builder().token(self.bot_token).build()
         self.application.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
+            MessageHandler(filters.TEXT, self.handle_message)
         )
         self.application.add_handler(
             MessageHandler(filters.PHOTO, self.handle_photo)

@@ -86,8 +86,19 @@ class Tenant(Base):
 
     tenant_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
     chat_id = Column(String, unique=True, nullable=False, index=True)
-    business_name = Column(String, nullable=True)  # set during onboarding
-    country = Column(String, nullable=True)         # e.g. "India", "US" — determines currency
+    business_name = Column(String, nullable=True)
+    country = Column(String, nullable=True)
+
+    # Subscription
+    # status: "pending" | "trial" | "active" | "expired"
+    # pending  = new user, onboarding not complete
+    # trial    = 7-day free trial running
+    # active   = paid subscription
+    # expired  = trial or subscription ended, access blocked
+    subscription_status = Column(String, nullable=False, default="pending")
+    trial_started_at = Column(DateTime, nullable=True)
+    subscription_expires_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
