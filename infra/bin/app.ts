@@ -1,45 +1,46 @@
 #!/usr/bin/env node
 /**
- * CDK App entry point.
+ * KitchenOS CDK App
  *
- * Deploy one stack per bakery:
+ * Deploy a KitchenOS server to AWS.
  *
- *   # SQLite (small bakery) — cheapest
- *   cdk deploy --context bakeryId=priya-bakery --context dbEngine=sqlite
+ * Usage:
+ *   # Shared server with SQLite (recommended — free tier eligible)
+ *   cdk deploy --context deploymentId=prod --context dbEngine=sqlite
  *
- *   # RDS PostgreSQL (larger bakery)
- *   cdk deploy --context bakeryId=raj-bakery --context dbEngine=rds
+ *   # With RDS PostgreSQL (for high-volume deployments)
+ *   cdk deploy --context deploymentId=prod --context dbEngine=rds
  *
  * Required context:
- *   bakeryId   - unique slug, used in all resource names (e.g. "priya-bakery")
- *   dbEngine   - "sqlite" | "rds"
+ *   deploymentId  — unique name for this deployment, e.g. "prod", "staging"
+ *   dbEngine      — "sqlite" (default) or "rds"
  *
- * Required environment variables (set in AWS SSM or passed via --context):
- *   TELEGRAM_BOT_TOKEN
- *   LLM_API_KEY
+ * Before deploying, store secrets in SSM Parameter Store:
+ *   aws ssm put-parameter --name /kitchenos/<deploymentId>/TELEGRAM_BOT_TOKEN --type SecureString --value <token>
+ *   aws ssm put-parameter --name /kitchenos/<deploymentId>/LLM_API_KEY --type SecureString --value <key>
+ *   aws ssm put-parameter --name /kitchenos/<deploymentId>/ADMIN_CHAT_ID --type String --value <chat_id>
  */
 
 import * as cdk from 'aws-cdk-lib';
-import { BakeryStack } from '../lib/bakery-stack';
+import { KitchenOsStack } from '../lib/kitchenos-stack';
 
 const app = new cdk.App();
 
-const bakeryId = app.node.tryGetContext('bakeryId');
-const dbEngine  = app.node.tryGetContext('dbEngine') ?? 'sqlite';
+const deploymentId = app.node.tryGetContext('deploymentId');
+const dbEngine = app.node.tryGetContext('dbEngine') ?? 'sqlite';
 
-if (!bakeryId) {
-  throw new Error('Missing required context: --context bakeryId=<slug>');
-}
-if (!['sqlite', 'rds'].includes(dbEngine)) {
-  throw new Error('dbEngine must be "sqlite" or "rds"');
-}
+if (deploymentId) {
+  if (!['sqlite', 'rds'].includes(dbEngine)) {
+    throw new Error('dbEngine must be "sqlite" or "rds"');
+  }
 
-new BakeryStack(app, `BakeryOps-${bakeryId}`, {
-  bakeryId,
-  dbEngine: dbEngine as 'sqlite' | 'rds',
-  env: {
-    account: process.env.CDK_DEFAULT_ACCOUNT,
-    region:  process.env.CDK_DEFAULT_REGION ?? 'ap-south-1',
-  },
-  description: `Bakery Operations Bot — ${bakeryId} (${dbEngine})`,
-});
+  new KitchenOsStack(app, `KitchenOS-${deploymentId}`, {
+    deploymentId,
+    dbEngine: dbEngine as 'sqlite' | 'rds',
+    env: {
+      account: process.env.CDK_DEFAULT_ACCOUNT,
+      region: process.env.CDK_DEFAULT_REGION ?? 'us-east-1',
+    },
+    description: `KitchenOS Bot — ${deploymentId} (${dbEngine})`,
+  });
+}
