@@ -481,6 +481,17 @@ class AgentService:
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
+        # Bedrock requires conversations to start with a user message.
+        # Remove any leading assistant/tool messages from history.
+        # Find the index of the first user message after the system prompt.
+        first_user = next(
+            (i for i, m in enumerate(messages) if m.get("role") == "user"),
+            len(messages) - 1
+        )
+        # Keep system prompt + everything from first user message onward
+        if first_user > 1:
+            messages = [messages[0]] + messages[first_user:]
+
         # Agent loop - keep calling until we get a text response (no more tool calls)
         for _ in range(10):  # max 10 tool calls per turn to prevent infinite loops
             response = await self.llm_client.call_llm(
