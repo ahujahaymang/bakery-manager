@@ -549,9 +549,11 @@ class AgentService:
             else:
                 # Text response - we're done
                 content = message.get("content", "")
-                # Strip chain-of-thought tags (Nova models output these)
-                content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL).strip()
-                return content
+                # Strip chain-of-thought and wrapper tags Nova models add
+                content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL)
+                content = re.sub(r'<response>(.*?)</response>', r'\1', content, flags=re.DOTALL)
+                content = re.sub(r'<answer>(.*?)</answer>', r'\1', content, flags=re.DOTALL)
+                return content.strip()
 
         return "I ran into an issue processing your request. Please try again."
 
