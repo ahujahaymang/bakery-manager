@@ -63,8 +63,9 @@ class Settings(BaseSettings):
     # Instagram / Meta
     META_APP_ID: str = ""
     META_APP_SECRET: str = ""
-    META_REDIRECT_URI: str = ""       # e.g. https://yourdomain.com/instagram/callback
-    INSTAGRAM_VERIFY_TOKEN: str = ""  # any secret string you choose
+    META_REDIRECT_URI: str = ""
+    INSTAGRAM_VERIFY_TOKEN: str = ""
+    WEBHOOK_URL: str = ""  # public HTTPS URL of this server (e.g. cloudflare tunnel URL)
 
     @property
     def DATABASE_URL(self) -> str:
