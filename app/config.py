@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     # to message first. Leave blank for shared multi-tenant deployments.
     OWNER_CHAT_ID: str = ""
 
-    # App
-    WEBHOOK_URL: str = ""
+    # Instagram DM conversation timeout before order detection
+    INSTAGRAM_CONVERSATION_TIMEOUT_MINUTES: int = 30
 
     # Instagram / Meta
     META_APP_ID: str = ""

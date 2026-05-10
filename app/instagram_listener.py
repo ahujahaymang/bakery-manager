@@ -37,8 +37,10 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
+from app.config import settings
+
 # How long to wait after last message before analysing the conversation
-CONVERSATION_TIMEOUT_MINUTES = 30
+CONVERSATION_TIMEOUT_MINUTES = getattr(settings, 'INSTAGRAM_CONVERSATION_TIMEOUT_MINUTES', 30)
 
 
 class InstagramListener:

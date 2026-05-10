@@ -7,6 +7,7 @@ No manual intent routing or state machines needed.
 
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -531,7 +532,10 @@ class AgentService:
                     })
             else:
                 # Text response - we're done
-                return message.get("content", "")
+                content = message.get("content", "")
+                # Strip chain-of-thought tags (Nova models output these)
+                content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL).strip()
+                return content
 
         return "I ran into an issue processing your request. Please try again."
 
