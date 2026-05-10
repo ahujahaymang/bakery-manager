@@ -457,16 +457,14 @@ class ToolExecutor:
         """Generate an Instagram OAuth link for the owner to connect their account."""
         from app.config import settings
 
-        if not settings.META_APP_ID or not settings.META_REDIRECT_URI:
-            # Meta not configured — show setup instructions
-            return (
-                "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
-            )
+        if not settings.META_APP_ID:
+            return "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
 
-        connect_url = (
-            f"{settings.WEBHOOK_URL or 'https://yourdomain.com'}"
-            f"/instagram/connect?tenant_id={self.tenant_id}"
-        )
+        # Use META_REDIRECT_URI if set, otherwise fall back to WEBHOOK_URL/instagram/callback
+        base_url = settings.WEBHOOK_URL or "https://yourdomain.com"
+        redirect_uri = settings.META_REDIRECT_URI or f"{base_url}/instagram/callback"
+
+        connect_url = f"{base_url}/instagram/connect?tenant_id={self.tenant_id}"
         return f"INSTAGRAM_CONNECT_URL:{connect_url}"
 
     # ── Reporting ──────────────────────────────────────────────────────────
