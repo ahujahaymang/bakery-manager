@@ -13,7 +13,16 @@ Built as a multi-tenant SaaS platform: one deployment can serve many independent
 ### Onboarding
 - First message triggers a two-step setup: business name → country
 - Country determines the currency used on invoices (India → Rs., US → $, UK → £, etc.)
-- Returning users go straight to the assistant
+- Account is pending admin approval after onboarding — admin gets notified immediately
+- Admin approves via `/trial <chat_id>` (7-day free trial) or `/approve <chat_id> [days]`
+- Owner receives a confirmation message when approved, including full capabilities overview
+
+### Instagram Integration
+- Owner says "connect instagram" → receives an OAuth link to connect their Instagram account
+- Once connected, KitchenOS monitors their Instagram DMs
+- After 30 minutes of conversation inactivity, LLM analyses the thread for confirmed orders
+- If an order is detected, owner gets a Telegram notification with details and yes/no confirmation
+- On "yes" → order is created automatically; customer added if new
 
 ### Inventory
 - Add ingredients and packaging materials with quantity, unit, and cost
@@ -49,6 +58,15 @@ Built as a multi-tenant SaaS platform: one deployment can serve many independent
 - Invoice includes business name, customer details, itemised list, totals, amount due
 - Currency shown based on the business's country setting
 - Sent as a downloadable PDF file directly in the chat
+
+### Subscription & Access Control
+- New users complete onboarding then wait for admin approval
+- Admin notified immediately on new signup via Telegram
+- `/trial <chat_id> [days]` — start free trial (default 7 days, configurable)
+- `/approve <chat_id> [days]` — activate paid subscription
+- `/status` — view all tenants with subscription status and days remaining
+- Access blocked with friendly message when trial/subscription expires
+- 2-day warning injected into conversation before expiry
 
 ### Reports
 - Weekly profit breakdown: revenue, ingredient cost, packaging cost, gross profit
@@ -205,16 +223,18 @@ See the Database section above for deployment options and cost breakdown.
 
 ---
 
-## Admin Access
+### Admin Access
 
 Set `ADMIN_CHAT_ID` to your Telegram chat_id. As admin:
-- You skip the welcome screen
-- You operate on the owner's data directly (shown as `Admin — <business name>`)
-- `/switch` lists all tenants with their business names
-- `/switch <chat_id>` switches between tenants and clears history
-- `/delete <chat_id>` permanently deletes a tenant's data (for deletion requests)
+- You skip the welcome screen and operate on owner data directly (shown as `Admin — <business name>`)
+- `/status` — lists all tenants with subscription status (⏳ pending, 🎁 trial, ✅ active, 🔴 expired)
+- `/switch` — lists all tenants with business names
+- `/switch <chat_id>` — switches active tenant and clears history
+- `/trial <chat_id> [days]` — start/reset trial (default 7 days); owner notified
+- `/approve <chat_id> [days]` — activate paid subscription (default 30 days); owner notified
+- `/delete <chat_id>` — permanently delete a tenant's data (for deletion requests)
 
-For dedicated single-tenant deployments, set `OWNER_CHAT_ID` to the owner's chat_id — admin routes directly to their data without the owner needing to message first.
+For dedicated single-tenant deployments, set `OWNER_CHAT_ID` to the owner's chat_id.
 
 ---
 
@@ -237,15 +257,16 @@ For dedicated single-tenant deployments, set `OWNER_CHAT_ID` to the owner's chat
 |---|---|
 | Language | Python 3.11+ |
 | Messaging | python-telegram-bot (polling mode) |
-| LLM | OpenAI GPT-4.1 nano (tool calling) |
-| Image processing | OpenAI GPT-4o Vision |
+| LLM — Agent/Intent | Amazon Bedrock Nova Lite (tool calling, cheap) |
+| LLM — Image processing | OpenAI GPT-4o mini (vision, handwriting) |
 | PDF generation | ReportLab (canvas API) |
 | ORM | SQLAlchemy 2.0 |
 | Migrations | Alembic |
 | Database | SQLite per-tenant (shared server) or PostgreSQL (production) |
 | Infrastructure | AWS CDK (TypeScript) |
-| Compute | EC2 t4g.nano/small (ARM, Graviton) |
+| Compute | EC2 t3.micro (free tier eligible) |
 | Backup | S3 (SQLite snapshots via Python sqlite3 backup API) |
+| Webhook tunnel | Cloudflare Tunnel (HTTPS, free) |
 | Config | pydantic-settings (.env file) |
 | Tests | pytest |
 
@@ -264,9 +285,9 @@ Adding WhatsApp support means writing `whatsapp_listener.py` that calls the same
 ```
 app/
 ├── handlers/
-│   └── request_handler.py      # Agent runner, history, image processing
+│   └── request_handler.py      # Agent runner, history, onboarding, admin, image processing
 ├── services/
-│   ├── agent_service.py        # LLM agent loop + tool definitions
+│   ├── agent_service.py        # LLM agent loop + tool definitions (Bedrock Nova Lite)
 │   ├── tool_executor.py        # Tool name → service method mapping
 │   ├── order_finder.py         # Order lookup utilities
 │   ├── customer_service.py
@@ -275,20 +296,31 @@ app/
 │   ├── payment_service.py
 │   ├── recipe_service.py
 │   ├── reporting_service.py
-│   ├── tenant_service.py
-│   ├── image_service.py
-│   ├── backup_service.py
-│   └── llm_service.py
+│   ├── tenant_service.py       # Subscription management, currency mapping
+│   ├── image_service.py        # GPT-4o Vision for handwritten images
+│   ├── invoice_service.py      # PDF invoice generation (ReportLab)
+│   ├── backup_service.py       # Hourly SQLite → S3 backup
+│   └── llm_service.py          # OpenAI client for image processing
+├── bedrock_client.py           # AWS Bedrock client (Nova Lite)
 ├── config.py                   # Environment configuration
-├── database.py                 # SQLAlchemy engine setup
+├── database.py                 # Per-tenant SQLite engine registry
 ├── models.py                   # ORM models (portable UUID/JSON types)
 ├── error_handler.py
 ├── llm_client.py               # HTTP client for OpenAI API
-└── telegram_listener.py        # Telegram adapter
+├── telegram_listener.py        # Telegram adapter
+├── instagram_listener.py       # Instagram DM webhook + order detection
+└── webhook_server.py           # FastAPI server for Instagram webhooks (port 8000)
 
-infra/                          # AWS CDK infrastructure
+infra/
+├── bin/app.ts                  # CDK entry point (deploymentId context)
+└── lib/kitchenos-stack.ts      # KitchenOsStack: EC2 t3.micro + EBS/RDS + S3
+
 migrations/                     # Alembic schema migrations
-scripts/                        # Utility scripts
+scripts/
+├── ec2_setup.sh                # Full EC2 setup script
+├── migrate_pg_to_sqlite.py     # Postgres → SQLite migration
+├── migrate_single_to_per_tenant.py  # Single-file → per-tenant migration
+└── update_webhook_url.py       # Auto-update Meta webhook on tunnel URL change
 tests/                          # pytest test suite
 ```
 
