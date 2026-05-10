@@ -481,16 +481,21 @@ class AgentService:
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
-        # Bedrock requires conversations to start with a user message.
-        # Remove any leading assistant/tool messages from history.
-        # Find the index of the first user message after the system prompt.
-        first_user = next(
-            (i for i, m in enumerate(messages) if m.get("role") == "user"),
-            len(messages) - 1
-        )
-        # Keep system prompt + everything from first user message onward
-        if first_user > 1:
-            messages = [messages[0]] + messages[first_user:]
+        # Bedrock requires:
+        # 1. Conversation must start with a user message (after system)
+        # 2. Only user/assistant/tool roles allowed in conversation turns
+        # Filter history to ensure compliance
+        filtered = []
+        for msg in messages[1:]:  # skip system
+            role = msg.get("role")
+            if role not in ("user", "assistant", "tool"):
+                continue  # drop any mid-conversation system messages
+            # Skip leading assistant messages
+            if not filtered and role != "user":
+                continue
+            filtered.append(msg)
+
+        messages = [messages[0]] + filtered  # system + filtered history
 
         # Agent loop - keep calling until we get a text response (no more tool calls)
         for _ in range(10):  # max 10 tool calls per turn to prevent infinite loops

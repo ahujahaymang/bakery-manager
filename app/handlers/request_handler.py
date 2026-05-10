@@ -285,10 +285,10 @@ class RequestHandler:
                 days = svc.days_remaining(tenant_id)
                 # Warn when 2 days left in trial
                 if status == "trial" and days is not None and days <= 2:
-                    # Don't block, but append a warning to history so agent can mention it
-                    warning = f"⚠️ Your free trial ends in {days} day{'s' if days != 1 else ''}."
+                    # Inject warning as a user-visible note (not system role — Bedrock rejects mid-conversation system messages)
+                    warning = f"[Note: Free trial ends in {days} day{'s' if days != 1 else ''}. Please subscribe to continue.]"
                     if warning not in str(self._get_history(chat_id)):
-                        self._append(chat_id, "system", warning)
+                        self._append(chat_id, "assistant", warning)
                 return None  # access allowed
 
             if status == "expired":
