@@ -17,12 +17,11 @@ Built as a multi-tenant SaaS platform: one deployment can serve many independent
 - Admin approves via `/trial <chat_id>` (7-day free trial) or `/approve <chat_id> [days]`
 - Owner receives a confirmation message when approved, including full capabilities overview
 
-### Instagram Integration
-- Owner says "connect instagram" → receives an OAuth link to connect their Instagram account
-- Once connected, KitchenOS monitors their Instagram DMs
-- After 30 minutes of conversation inactivity, LLM analyses the thread for confirmed orders
-- If an order is detected, owner gets a Telegram notification with details and yes/no confirmation
-- On "yes" → order is created automatically; customer added if new
+### Instagram Integration *(coming soon)*
+- Owner connects their Instagram Business account once
+- KitchenOS monitors Instagram DMs automatically
+- LLM detects confirmed orders from customer conversations
+- Owner gets a Telegram notification to confirm before order is created
 
 ### Inventory
 - Add ingredients and packaging materials with quantity, unit, and cost
@@ -335,4 +334,5 @@ tests/                          # pytest test suite
 | **Monthly P&L PDF** | Auto-generated profit & loss statement as a downloadable PDF, shareable with accountants |
 | **Multi-user access** | Allow multiple staff members to use the same bot with role-based permissions (owner vs. staff) |
 | **Auto WhatsApp sync** | Receive orders directly from WhatsApp messages without manual entry |
-| **Stripe integration** | Accept online payments, auto-reconcile with order records, send payment links to customers |
+| **Instagram order detection** | Monitor Instagram DMs, detect confirmed orders, notify owner for confirmation. Infrastructure built — blocked on Meta app review process. |
+| **Stripe / Razorpay integration** | Accept online payments, auto-reconcile with order records, send payment links to customers |

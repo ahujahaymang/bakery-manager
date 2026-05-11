@@ -114,10 +114,9 @@ Every transaction is recorded as it happens. Your financial history is always th
 - Includes your business name, customer details, itemised list, and amount due
 - Currency matches your country (₹ for India, $ for US, £ for UK, etc.)
 
-### Instagram Order Detection
-- Connect your Instagram account once — the bot monitors your DMs automatically
-- When a customer confirms an order in your DMs, the bot detects it
-- You get a Telegram notification: *"New order from @customer — 2 brownies, Sunday. Confirm?"*
+### Instagram Order Detection *(coming soon)*
+- Connect your Instagram account once — the bot will monitor your DMs automatically
+- When a customer confirms an order in your DMs, you get a Telegram notification
 - Reply yes → order created. Reply no → discarded.
 - No more manually copying orders from Instagram to your notebook
 

@@ -454,18 +454,8 @@ class ToolExecutor:
     # ── Instagram ──────────────────────────────────────────────────────────
 
     async def _tool_connect_instagram(self, args):
-        """Generate an Instagram OAuth link for the owner to connect their account."""
-        from app.config import settings
-
-        if not settings.META_APP_ID:
-            return "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
-
-        # Use META_REDIRECT_URI if set, otherwise fall back to WEBHOOK_URL/instagram/callback
-        base_url = settings.WEBHOOK_URL or "https://yourdomain.com"
-        redirect_uri = settings.META_REDIRECT_URI or f"{base_url}/instagram/callback"
-
-        connect_url = f"{base_url}/instagram/connect?tenant_id={self.tenant_id}"
-        return f"INSTAGRAM_CONNECT_URL:{connect_url}"
+        """Instagram integration is coming soon."""
+        return "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
 
     # ── Reporting ──────────────────────────────────────────────────────────
 
