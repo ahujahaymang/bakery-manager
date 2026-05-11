@@ -330,21 +330,25 @@ def create_instagram_router(listener: InstagramListener):
 
     @router.get("/connect")
     async def connect(request: Request):
-        """
-        Start Instagram OAuth flow for a tenant.
-        URL: /instagram/connect?tenant_id=<uuid>
-        """
+        """Start Instagram OAuth flow for a tenant."""
         tenant_id = request.query_params.get("tenant_id")
         if not tenant_id:
             raise HTTPException(400, "tenant_id required")
 
-        # Build Meta OAuth URL
+        # Use META_REDIRECT_URI if set, otherwise build from WEBHOOK_URL
+        base_url = settings.WEBHOOK_URL or ""
+        redirect_uri = settings.META_REDIRECT_URI or f"{base_url}/instagram/callback"
+
+        if not redirect_uri or redirect_uri == "/instagram/callback":
+            raise HTTPException(500, "WEBHOOK_URL or META_REDIRECT_URI must be configured")
+
         oauth_url = (
             f"https://www.facebook.com/v18.0/dialog/oauth"
             f"?client_id={settings.META_APP_ID}"
-            f"&redirect_uri={settings.META_REDIRECT_URI}"
-            f"&scope=instagram_basic,instagram_manage_messages,pages_messaging"
+            f"&redirect_uri={redirect_uri}"
+            f"&scope=instagram_basic,instagram_manage_messages"
             f"&state={tenant_id}"
+            f"&response_type=code"
         )
         from fastapi.responses import RedirectResponse
         return RedirectResponse(oauth_url)
@@ -364,13 +368,16 @@ def create_instagram_router(listener: InstagramListener):
         import httpx
 
         # Exchange code for access token
+        base_url = settings.WEBHOOK_URL or ""
+        redirect_uri = settings.META_REDIRECT_URI or f"{base_url}/instagram/callback"
+
         async with httpx.AsyncClient() as client:
             token_resp = await client.get(
                 "https://graph.facebook.com/v18.0/oauth/access_token",
                 params={
                     "client_id": settings.META_APP_ID,
                     "client_secret": settings.META_APP_SECRET,
-                    "redirect_uri": settings.META_REDIRECT_URI,
+                    "redirect_uri": redirect_uri,
                     "code": code,
                 }
             )
