@@ -335,15 +335,17 @@ def create_instagram_router(listener: InstagramListener):
         if not tenant_id:
             raise HTTPException(400, "tenant_id required")
 
-        # Use META_REDIRECT_URI if set, otherwise build from WEBHOOK_URL
         base_url = settings.WEBHOOK_URL or ""
         redirect_uri = settings.META_REDIRECT_URI or f"{base_url}/instagram/callback"
 
         if not redirect_uri or redirect_uri == "/instagram/callback":
             raise HTTPException(500, "WEBHOOK_URL or META_REDIRECT_URI must be configured")
 
+        # Use Instagram app deep link — opens native Instagram authorization screen on phone.
+        # Falls back to web OAuth if Instagram app is not installed.
+        # auth_type=reauthenticate forces a fresh login, bypassing browser cache.
         oauth_url = (
-            f"https://www.facebook.com/v18.0/dialog/oauth"
+            f"https://api.instagram.com/oauth/authorize"
             f"?client_id={settings.META_APP_ID}"
             f"&redirect_uri={redirect_uri}"
             f"&scope=instagram_basic,instagram_manage_messages"
@@ -367,16 +369,17 @@ def create_instagram_router(listener: InstagramListener):
 
         import httpx
 
-        # Exchange code for access token
+        # Exchange code for access token (Instagram Basic Display API)
         base_url = settings.WEBHOOK_URL or ""
         redirect_uri = settings.META_REDIRECT_URI or f"{base_url}/instagram/callback"
 
         async with httpx.AsyncClient() as client:
-            token_resp = await client.get(
-                "https://graph.facebook.com/v18.0/oauth/access_token",
-                params={
+            token_resp = await client.post(
+                "https://api.instagram.com/oauth/access_token",
+                data={
                     "client_id": settings.META_APP_ID,
                     "client_secret": settings.META_APP_SECRET,
+                    "grant_type": "authorization_code",
                     "redirect_uri": redirect_uri,
                     "code": code,
                 }
@@ -387,13 +390,15 @@ def create_instagram_router(listener: InstagramListener):
             if not access_token:
                 raise HTTPException(400, f"Failed to get access token: {token_data}")
 
-            # Get Instagram account ID
+            ig_user_id = token_data.get("user_id")
+
+            # Get Instagram account details
             me_resp = await client.get(
-                "https://graph.facebook.com/v18.0/me",
-                params={"access_token": access_token, "fields": "id,name"}
+                f"https://graph.instagram.com/{ig_user_id}",
+                params={"access_token": access_token, "fields": "id,username"}
             )
             me_data = me_resp.json()
-            ig_account_id = me_data.get("id")
+            ig_account_id = me_data.get("id", ig_user_id)
 
         # Store in tenant registry
         reg_db = next(get_registry_db())
