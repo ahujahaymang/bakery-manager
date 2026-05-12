@@ -18,7 +18,7 @@ from typing import Optional
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
-from app.database import get_db, get_registry_db
+from app.database import get_registry_db
 from app.services.tenant_service import TenantService
 from app.handlers.request_handler import RequestHandler
 from app.services.admin_notifier import AdminNotifier
@@ -119,33 +119,29 @@ class TelegramBotListener:
             finally:
                 registry_db.close()
 
-            # Step 2: process with timeout
-            db = next(get_db(tenant_id))
+            # Step 2: process with timeout — handler opens its own DB session
             try:
-                try:
-                    response = await asyncio.wait_for(
-                        self.handler.handle_text(db, tenant_id, chat_id, text),
-                        timeout=REQUEST_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(f"Request timed out for chat_id={chat_id}")
-                    response = (
-                        "⏱ That took too long to process. Please try again.\n"
-                        "If this keeps happening, try breaking your request into smaller steps."
-                    )
+                response = await asyncio.wait_for(
+                    self.handler.handle_text(tenant_id, chat_id, text),
+                    timeout=REQUEST_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Request timed out for chat_id={chat_id}")
+                response = (
+                    "⏱ That took too long to process. Please try again.\n"
+                    "If this keeps happening, try breaking your request into smaller steps."
+                )
 
-                # File response (e.g. invoice PDF)
-                if isinstance(response, tuple):
-                    pdf_bytes, filename = response
-                    await update.message.reply_document(
-                        document=pdf_bytes,
-                        filename=filename,
-                        caption="📄 Here's your invoice!",
-                    )
-                else:
-                    await self._edit(thinking_msg, response)
-            finally:
-                db.close()
+            # File response (e.g. invoice PDF)
+            if isinstance(response, tuple):
+                pdf_bytes, filename = response
+                await update.message.reply_document(
+                    document=pdf_bytes,
+                    filename=filename,
+                    caption="📄 Here's your invoice!",
+                )
+            else:
+                await self._edit(thinking_msg, response)
 
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
@@ -180,35 +176,31 @@ class TelegramBotListener:
             finally:
                 registry_db.close()
 
-            # Step 2: process image with timeout
-            db = next(get_db(tenant_id))
+            # Step 2: process image with timeout — handler opens its own DB session
+            thinking_msg = await update.message.reply_text("🔍 Processing image...")
+
             try:
-                thinking_msg = await update.message.reply_text("🔍 Processing image...")
+                response = await asyncio.wait_for(
+                    self.handler.handle_image(tenant_id, chat_id, photo_bytes, caption),
+                    timeout=REQUEST_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Image processing timed out for chat_id={chat_id}")
+                response = (
+                    "⏱ Image processing took too long. Please try again.\n"
+                    "Make sure the image is clear and well-lit."
+                )
 
-                try:
-                    response = await asyncio.wait_for(
-                        self.handler.handle_image(db, tenant_id, chat_id, photo_bytes, caption),
-                        timeout=REQUEST_TIMEOUT,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(f"Image processing timed out for chat_id={chat_id}")
-                    response = (
-                        "⏱ Image processing took too long. Please try again.\n"
-                        "Make sure the image is clear and well-lit."
-                    )
-
-                if response is None:
-                    await self._edit(thinking_msg, (
-                        "📸 I received your image!\n\n"
-                        "Please add a caption to tell me what it is:\n"
-                        "• *recipe* — handwritten or printed recipe\n"
-                        "• *receipt* — payment receipt or bill\n"
-                        "• *order* — WhatsApp/SMS order screenshot"
-                    ))
-                else:
-                    await self._edit(thinking_msg, response)
-            finally:
-                db.close()
+            if response is None:
+                await self._edit(thinking_msg, (
+                    "📸 I received your image!\n\n"
+                    "Please add a caption to tell me what it is:\n"
+                    "• *recipe* — handwritten or printed recipe\n"
+                    "• *receipt* — payment receipt or bill\n"
+                    "• *order* — WhatsApp/SMS order screenshot"
+                ))
+            else:
+                await self._edit(thinking_msg, response)
 
         except Exception as e:
             logger.error(f"Error handling photo: {e}", exc_info=True)

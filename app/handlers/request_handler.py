@@ -3,11 +3,14 @@ Platform-agnostic request handler.
 
 Owns the agent loop, conversation history, and image processing logic.
 Works with any messaging platform — Telegram, WhatsApp, Slack, etc.
-The caller supplies: chat_id, db session, and raw input (text or image).
+The caller supplies only: chat_id and raw input (text or image).
+The handler resolves the correct DB session internally from tenant_id,
+ensuring the right database is always used regardless of admin switching.
 """
 
 import logging
 from collections import defaultdict
+from contextlib import contextmanager
 from typing import Dict, List, Optional
 from uuid import UUID
 
@@ -22,6 +25,17 @@ logger = logging.getLogger(__name__)
 
 # Number of message turns kept in memory per conversation
 MAX_HISTORY = 20
+
+
+@contextmanager
+def _open_db(tenant_id: UUID):
+    """Open a business DB session for tenant_id and ensure it is closed."""
+    from app.database import get_db
+    db = next(get_db(tenant_id))
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 class RequestHandler:
@@ -115,9 +129,12 @@ class RequestHandler:
             "Please try again. If the problem persists, use */report* to let us know."
         )
 
-    async def handle_text(self, db, tenant_id: UUID, chat_id: str, text: str) -> str:
+    async def handle_text(self, tenant_id: UUID, chat_id: str, text: str) -> str:
         """
         Process a text message and return the agent's response.
+
+        The handler opens its own DB session for the correct tenant.
+        Callers only need to supply tenant_id and chat_id.
 
         Onboarding flow for new users:
         1. First message → ask for business name
@@ -131,8 +148,7 @@ class RequestHandler:
         - Run agent with conversation history
 
         Args:
-            db: Database session (tenant's business DB)
-            tenant_id: Tenant UUID
+            tenant_id: Tenant UUID (resolved from chat_id by the caller)
             chat_id: Unique conversation identifier
             text: User's message text
 
@@ -140,7 +156,7 @@ class RequestHandler:
             Response string to deliver to the user
         """
         if self._is_admin(chat_id):
-            return await self._handle_admin_message(db, tenant_id, chat_id, text)
+            return await self._handle_admin_message(tenant_id, chat_id, text)
 
         # Privacy command — available to all users at any time
         if text.lower() in ("/privacy", "privacy policy", "data privacy"):
@@ -167,10 +183,8 @@ class RequestHandler:
 
         # Step 1: brand new user — no history, no business name set yet
         if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
-            # Check if they already have a business name (returning user after bot restart)
             already_named = await self._get_business_name(tenant_id)
             if already_named:
-                # Returning user — seed history with a context note and go straight to agent
                 self._append(chat_id, "assistant", f"Welcome back, {already_named}!")
             else:
                 self._awaiting_business_name[chat_id] = True
@@ -182,11 +196,11 @@ class RequestHandler:
 
         # Step 2: awaiting business name — save it and ask for country
         if chat_id in self._awaiting_business_name:
-            return await self._save_business_name(db, tenant_id, chat_id, text)
+            return await self._save_business_name(tenant_id, chat_id, text)
 
         # Step 3: awaiting country — save it and show capabilities
         if chat_id in self._awaiting_country:
-            return await self._complete_onboarding(db, tenant_id, chat_id, text)
+            return await self._complete_onboarding(tenant_id, chat_id, text)
 
         # Subscription gate — check before running agent
         gate_response = await self._check_subscription(tenant_id, chat_id)
@@ -199,7 +213,8 @@ class RequestHandler:
             if result is not None:
                 return result
 
-        return await self._run_agent(db, tenant_id, chat_id, text)
+        with _open_db(tenant_id) as db:
+            return await self._run_agent(db, tenant_id, chat_id, text)
 
     async def _get_business_name(self, tenant_id: UUID) -> Optional[str]:
         """Look up the business name for a tenant from the registry. Returns None if not set."""
@@ -215,7 +230,7 @@ class RequestHandler:
             reg_db.close()
 
     async def _save_business_name(
-        self, db, tenant_id: UUID, chat_id: str, business_name: str
+        self, tenant_id: UUID, chat_id: str, business_name: str
     ) -> str:
         """Save business name and ask for country."""
         from app.services.tenant_service import TenantService
@@ -239,7 +254,7 @@ class RequestHandler:
         )
 
     async def _complete_onboarding(
-        self, db, tenant_id: UUID, chat_id: str, country: str
+        self, tenant_id: UUID, chat_id: str, country: str
     ) -> str:
         """Save country and show the welcome/capabilities message."""
         from app.services.tenant_service import TenantService
@@ -420,7 +435,6 @@ class RequestHandler:
 
     async def handle_image(
         self,
-        db,
         tenant_id: UUID,
         chat_id: str,
         image_bytes: bytes,
@@ -429,12 +443,10 @@ class RequestHandler:
         """
         Process an image message and return the agent's response.
 
-        Determines image type from caption keywords, extracts structured data
-        via GPT-4o Vision, summarises it as a natural language instruction,
-        then passes it to the agent.
+        The handler opens its own DB session for the correct tenant.
+        Callers only need to supply tenant_id and chat_id.
 
         Args:
-            db: Database session
             tenant_id: Tenant UUID
             chat_id: Unique conversation identifier
             image_bytes: Raw image bytes
@@ -442,7 +454,6 @@ class RequestHandler:
 
         Returns:
             Response string, or None if caption is missing/unrecognised
-            (caller should prompt the user to add a caption)
         """
         image_type = self._detect_image_type(caption)
         if image_type is None:
@@ -455,11 +466,12 @@ class RequestHandler:
         summary = self._summarise_image_result(image_type, result)
         logger.info(f"Image summary ({image_type}): {summary[:200]}")
 
-        return await self._run_agent(
-            db, tenant_id, chat_id,
-            user_message=summary,
-            history_label=f"[Image: {image_type}]",
-        )
+        with _open_db(tenant_id) as db:
+            return await self._run_agent(
+                db, tenant_id, chat_id,
+                user_message=summary,
+                history_label=f"[Image: {image_type}]",
+            )
 
     async def close(self) -> None:
         """Shut down the agent and LLM client."""
@@ -472,7 +484,7 @@ class RequestHandler:
         return bool(settings.ADMIN_CHAT_ID) and chat_id == settings.ADMIN_CHAT_ID
 
     async def _handle_admin_message(
-        self, db, tenant_id: UUID, chat_id: str, text: str
+        self, tenant_id: UUID, chat_id: str, text: str
     ):
         """Route admin messages: /switch, /delete, /approve, /trial, /status or agent call."""
         if text.startswith("/switch"):
@@ -486,17 +498,14 @@ class RequestHandler:
         if text.startswith("/status"):
             return self._handle_status_command(chat_id)
 
+        # Resolve which tenant the admin is operating as, then open that tenant's DB.
+        # This is the single place where tenant resolution and DB opening are coupled,
+        # so there is no risk of mismatch.
         active_tenant_id = self._resolve_admin_tenant(chat_id, tenant_id)
-        label = self._admin_label(db, active_tenant_id)
+        label = self._admin_label(active_tenant_id)
 
-        # Open the correct DB for the active tenant — the incoming `db` is
-        # connected to the admin's own tenant, not the switched-to tenant.
-        from app.database import get_db
-        active_db = next(get_db(active_tenant_id))
-        try:
-            response = await self._run_agent(active_db, active_tenant_id, chat_id, text)
-        finally:
-            active_db.close()
+        with _open_db(active_tenant_id) as db:
+            response = await self._run_agent(db, active_tenant_id, chat_id, text)
 
         # File response (e.g. invoice PDF) — pass through as-is, no label prefix
         if isinstance(response, tuple):
@@ -546,7 +555,7 @@ class RequestHandler:
 
         return fallback_tenant_id
 
-    def _admin_label(self, db, tenant_id: UUID) -> str:
+    def _admin_label(self, tenant_id: UUID) -> str:
         """Short label shown above every admin response."""
         if settings.OWNER_CHAT_ID:
             return "Admin view"
