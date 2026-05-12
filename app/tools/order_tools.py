@@ -5,6 +5,8 @@ class OrderTools:
     TOOLS = [
         fn("create_order",
            "Create an order. Check customer's default address first; confirm or ask for a different one. "
+           "ALWAYS ask for delivery date if not provided — never default to today. "
+           "selling_price is the price PER UNIT (per piece, per ½ kg, per pack) — NOT the total. "
            "After confirming items and price, ask: 'Any customizations? (e.g. fondant decoration, special message)'",
            {
                "customer_identifier": str_prop("Customer name or phone"),
@@ -17,7 +19,8 @@ class OrderTools:
                        "properties": {
                            "recipe_name": {"type": "string"},
                            "quantity": {"type": "integer"},
-                           "selling_price": {"type": "number"},
+                           "selling_price": {"type": "number",
+                                             "description": "Price PER UNIT (not total). Total = quantity × selling_price."},
                            "customization_charge": {"type": "number",
                                                     "description": "Extra charge for customization (e.g. 200 for fondant). Added to selling_price on invoice."},
                            "customization_note": {"type": "string",
