@@ -15,8 +15,8 @@ import logging
 import threading
 from typing import Optional
 
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
 from app.database import get_registry_db
 from app.services.tenant_service import TenantService
@@ -81,6 +81,67 @@ class TelegramBotListener:
             except Exception as e:
                 logger.error(f"Failed to send notification to {chat_id}: {e}")
 
+    async def _send_admin_tenant_keyboard(self, chat_id: str):
+        """
+        Send the admin an inline keyboard listing all tenants.
+        Each button switches to that tenant when clicked.
+        """
+        from app.database import get_registry_db
+        from app.services.tenant_service import TenantService
+        from app.models import Tenant as TenantModel
+
+        reg_db = next(get_registry_db())
+        try:
+            tenants = (
+                reg_db.query(TenantModel)
+                .filter(TenantModel.chat_id != chat_id)
+                .order_by(TenantModel.created_at)
+                .all()
+            )
+        finally:
+            reg_db.close()
+
+        if not tenants:
+            await self.application.bot.send_message(
+                chat_id=int(chat_id),
+                text="No tenants registered yet."
+            )
+            return
+
+        # Build one button per tenant, callback_data = "switch:<chat_id>"
+        buttons = [
+            [InlineKeyboardButton(
+                text=t.business_name or t.chat_id,
+                callback_data=f"switch:{t.chat_id}"
+            )]
+            for t in tenants
+        ]
+        keyboard = InlineKeyboardMarkup(buttons)
+
+        await self.application.bot.send_message(
+            chat_id=int(chat_id),
+            text="👥 *Select a tenant to manage:*",
+            parse_mode="Markdown",
+            reply_markup=keyboard,
+        )
+
+    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline keyboard button presses (admin tenant switching)."""
+        query = update.callback_query
+        await query.answer()
+
+        chat_id = str(query.from_user.id)
+        data = query.data or ""
+
+        if data.startswith("switch:"):
+            target_chat_id = data[len("switch:"):]
+            # Delegate to handler's switch logic
+            response = self.handler._handle_switch_command(chat_id, f"/switch {target_chat_id}")
+            try:
+                await query.edit_message_text(response, parse_mode="Markdown")
+            except Exception:
+                await query.edit_message_text(response)
+
     async def _send(self, update: Update, text: str):
         """Send with Markdown, fall back to plain text."""
         try:
@@ -107,6 +168,13 @@ class TelegramBotListener:
             chat_id = str(update.message.chat_id)
             text = update.message.text.strip()
             logger.info(f"Text from {chat_id}: {text}")
+
+            # Admin: show tenant picker on /switch with no argument, or on first message
+            is_admin = bool(settings.ADMIN_CHAT_ID) and chat_id == settings.ADMIN_CHAT_ID
+            if is_admin and (text == "/switch" or (not self.handler._history.get(chat_id) and not self.handler._admin_target.get(chat_id))):
+                await self._send_admin_tenant_keyboard(chat_id)
+                if text == "/switch":
+                    return  # keyboard is the full response for bare /switch
 
             # Show "Thinking..." immediately so the user knows we're working
             thinking_msg = await update.message.reply_text("💭 Thinking...")
@@ -218,6 +286,9 @@ class TelegramBotListener:
         )
         self.application.add_handler(
             MessageHandler(filters.PHOTO, self.handle_photo)
+        )
+        self.application.add_handler(
+            CallbackQueryHandler(self.handle_callback)
         )
         async with self.application:
             await self.application.initialize()

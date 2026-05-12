@@ -138,7 +138,19 @@ class ToolExecutor:
                 f"Ask the user: do they want to replace it, or save under a different name?"
             )
         recipe = svc.create_recipe(self.tenant_id, args["name"], args["yield_per_batch"])
-        return f"Recipe created: {recipe.name} (yield: {recipe.yield_per_batch} units/batch)"
+        result = f"Recipe created: {recipe.name} (yield: {recipe.yield_per_batch} units/batch)"
+
+        # Suggest product link if matching unlinked products exist
+        from app.services.product_service import ProductService
+        prod_svc = ProductService(self.db)
+        matches = prod_svc.find_matching_products_for_recipe(self.tenant_id, recipe.name)
+        if matches:
+            names = ", ".join(f"'{p.name}'" for p in matches[:3])
+            result += (
+                f"\n\n💡 Found matching product(s) in catalog: {names}. "
+                f"Link this recipe? Use: `link product <name> to recipe {recipe.name}`"
+            )
+        return result
 
     async def _tool_replace_recipe(self, args):
         svc = RecipeService(self.db)
@@ -488,6 +500,112 @@ class ToolExecutor:
     async def _tool_connect_instagram(self, args):
         """Instagram integration is coming soon."""
         return "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
+
+    # ── Products ───────────────────────────────────────────────────────────
+
+    async def _tool_add_product(self, args):
+        """
+        Add a product to the catalog with one or more size/price variants.
+        After creation, check for matching recipes and suggest linking.
+        """
+        from app.services.product_service import ProductService, VariantInput
+        svc = ProductService(self.db)
+
+        variants = [
+            VariantInput(size_label=v["size_label"], price=Decimal(str(v["price"])))
+            for v in args.get("variants", [])
+        ]
+
+        product = svc.create_product(
+            tenant_id=self.tenant_id,
+            name=args["name"],
+            variants=variants,
+            description=args.get("description"),
+            category=args.get("category"),
+        )
+
+        lines = [f"✅ Added *{product.name}*"]
+        if product.category:
+            lines[0] += f" ({product.category})"
+        for v in product.variants:
+            lines.append(f"  {v.size_label}: ₹{v.price:.0f}")
+
+        # Suggest recipe link if matching recipes exist
+        matches = svc.find_matching_recipes_for_product(self.tenant_id, product.name)
+        if matches:
+            names = ", ".join(f"*{r.name}*" for r in matches[:3])
+            lines.append(
+                f"\n💡 Found matching recipe(s): {names}. "
+                f"Link one? Use: `link product {product.name} to recipe <name>`"
+            )
+
+        return "\n".join(lines)
+
+    async def _tool_list_products(self, args):
+        from app.services.product_service import ProductService
+        svc = ProductService(self.db)
+        category = args.get("category")
+        products = svc.list_products(self.tenant_id)
+        if category:
+            products = [p for p in products if p.category and category.lower() in p.category.lower()]
+        if not products:
+            return "No products in catalog yet."
+        return svc.format_catalog(self.tenant_id) if not category else "\n\n".join(
+            svc.format_product(p) for p in products
+        )
+
+    async def _tool_get_product(self, args):
+        from app.services.product_service import ProductService
+        svc = ProductService(self.db)
+        product = svc.get_product(self.tenant_id, args["name"])
+        if not product:
+            return f"Product '{args['name']}' not found"
+        return svc.format_product(product)
+
+    async def _tool_update_product_price(self, args):
+        from app.services.product_service import ProductService
+        svc = ProductService(self.db)
+        variant = svc.update_variant_price(
+            self.tenant_id,
+            args["name"],
+            args["size_label"],
+            Decimal(str(args["price"])),
+        )
+        return f"Updated {args['name']} — {variant.size_label}: ₹{variant.price:.0f}"
+
+    async def _tool_add_product_variant(self, args):
+        from app.services.product_service import ProductService
+        svc = ProductService(self.db)
+        variant = svc.add_variant(
+            self.tenant_id,
+            args["name"],
+            args["size_label"],
+            Decimal(str(args["price"])),
+        )
+        return f"Added variant to {args['name']}: {variant.size_label} = ₹{variant.price:.0f}"
+
+    async def _tool_link_product_recipe(self, args):
+        """Link a product to a recipe for cost/margin calculation."""
+        from app.services.product_service import ProductService
+        from app.services.recipe_service import RecipeService
+        svc = ProductService(self.db)
+        recipe_svc = RecipeService(self.db)
+
+        recipe = recipe_svc.get_recipe(self.tenant_id, args["recipe_name"])
+        if not recipe:
+            return f"Recipe '{args['recipe_name']}' not found"
+
+        product = svc.link_recipe(self.tenant_id, args["product_name"], recipe.recipe_id)
+        return (
+            f"✅ Linked *{product.name}* → recipe *{recipe.name}*\n"
+            f"Cost per unit from recipe will now be used for margin calculation."
+        )
+
+    async def _tool_delete_product(self, args):
+        from app.services.product_service import ProductService
+        svc = ProductService(self.db)
+        svc.delete_product(self.tenant_id, args["name"])
+        return f"Product '{args['name']}' deleted from catalog"
 
     # ── Reporting ──────────────────────────────────────────────────────────
 

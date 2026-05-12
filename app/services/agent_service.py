@@ -406,6 +406,122 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "add_product",
+            "description": "Add a product to the catalog with one or more size/price variants. Use when owner adds a product manually or after catalog image extraction.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Product name"},
+                    "category": {"type": "string", "description": "Category e.g. 'Gourmet Cookies', 'Desserts', 'Small Bakes'"},
+                    "description": {"type": "string", "description": "Optional description"},
+                    "variants": {
+                        "type": "array",
+                        "description": "Size/price variants — at least one required",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "size_label": {"type": "string", "description": "e.g. '250 gms', '½ kg', 'per piece', 'Pack of 6', 'standard'"},
+                                "price": {"type": "number", "description": "Price in ₹"}
+                            },
+                            "required": ["size_label", "price"]
+                        }
+                    }
+                },
+                "required": ["name", "variants"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_products",
+            "description": "Show the product catalog, optionally filtered by category",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string", "description": "Optional category filter"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_product",
+            "description": "Get full details of a product including all variants and linked recipe",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_product_price",
+            "description": "Update the price of a specific size variant of a product",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Product name"},
+                    "size_label": {"type": "string", "description": "Size variant to update e.g. '250 gms'"},
+                    "price": {"type": "number", "description": "New price in ₹"}
+                },
+                "required": ["name", "size_label", "price"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_product_variant",
+            "description": "Add a new size/price variant to an existing product",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Product name"},
+                    "size_label": {"type": "string", "description": "New size label e.g. '1 kg'"},
+                    "price": {"type": "number", "description": "Price in ₹"}
+                },
+                "required": ["name", "size_label", "price"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "link_product_recipe",
+            "description": "Link a product to a recipe for cost and margin calculation. Use when owner confirms the link suggestion.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_name": {"type": "string"},
+                    "recipe_name": {"type": "string"}
+                },
+                "required": ["product_name", "recipe_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_product",
+            "description": "Remove a product from the catalog",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "generate_invoice",
             "description": "Generate a PDF invoice for an order and send it to the user. Use when the user asks to create or send an invoice for a customer's order. delivery_date is optional — if omitted, uses the most recent order for that customer.",
             "parameters": {
@@ -430,7 +546,7 @@ SYSTEM_PROMPT = """You are a bakery operations assistant. Help the user manage t
 
 Today's date: {today}
 
-You have tools to manage customers, inventory, recipes, orders, and payments.
+You have tools to manage customers, inventory, recipes, orders, payments, and the product catalog.
 
 Guidelines:
 - Always use tools to perform actions - never make up data
@@ -445,6 +561,15 @@ Recipe creation rules:
 - To add a recipe: call create_recipe, then call add_recipe_component for each ingredient/packaging
 - NEVER call add_inventory before add_recipe_component — add_recipe_component handles missing items automatically
 - After saving a recipe with new ingredients, tell the user: "Recipe saved! Some ingredients were added as placeholders with ₹0 cost. Update their prices in inventory for accurate cost calculations."
+
+Product catalog rules:
+- Products are what the owner sells to customers (e.g. "Oatmeal Raisin Cookies")
+- Recipes are internal production instructions with ingredient costs
+- A product can be linked to a recipe to enable margin calculation
+- When a tool suggests linking a product to a recipe (💡 hint), present the suggestion to the user and ask if they want to link them
+- If user says yes to a link suggestion, call link_product_recipe immediately
+- Products can have multiple size/price variants (e.g. 250g = ₹400, 500g = ₹800)
+- When owner uploads a catalog image, the system extracts all products automatically — confirm the count and ask if they want to make any changes
 """
 
 

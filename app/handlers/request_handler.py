@@ -482,7 +482,8 @@ class RequestHandler:
                 "Please reply with one of:\n"
                 "• *recipe* — handwritten or printed recipe\n"
                 "• *receipt* — payment receipt or bill\n"
-                "• *order* — WhatsApp/SMS order screenshot"
+                "• *order* — WhatsApp/SMS order screenshot\n"
+                "• *catalog* — product menu or price list"
             )
 
         # Clear any pending image for this chat (user sent a new one with a caption)
@@ -996,6 +997,7 @@ class RequestHandler:
         "receipt": ["receipt", "payment", "paid", "bill"],
         "recipe":  ["recipe", "ingredients", "formula"],
         "order":   ["order", "whatsapp", "message", "sms"],
+        "catalog": ["catalog", "catalogue", "menu", "price list", "pricelist", "products"],
     }
 
     def _detect_image_type(self, caption: str) -> Optional[str]:
@@ -1016,6 +1018,7 @@ class RequestHandler:
             "receipt": self.image_service.process_receipt_image,
             "recipe":  self.image_service.process_recipe_image,
             "order":   self.image_service.process_order_image,
+            "catalog": self.image_service.process_catalog_image,
         }
         return await extractors[image_type](image_bytes)
 
@@ -1028,6 +1031,7 @@ class RequestHandler:
             "receipt": self._summarise_receipt,
             "recipe":  self._summarise_recipe,
             "order":   self._summarise_order,
+            "catalog": self._summarise_catalog,
         }
         return summarisers[image_type](result)
 
@@ -1078,4 +1082,38 @@ class RequestHandler:
                 f"price ₹{item.get('selling_price', 0)}"
             )
         lines.append("Create the order. Ask for any missing details.")
+        return "\n".join(lines)
+
+    def _summarise_catalog(self, result: dict) -> str:
+        """
+        Build agent instruction from extracted catalog data.
+        Tells the agent to add all products using add_product tool.
+        """
+        categories = result.get("categories", [])
+        if not categories:
+            return "I scanned a catalog image but could not extract any products. Please try again with a clearer image."
+
+        total = sum(len(cat.get("products", [])) for cat in categories)
+        lines = [
+            f"I scanned a product catalog image. Please add all {total} products to the catalog using the add_product tool.",
+            "Here are all the products extracted:\n",
+        ]
+
+        for cat in categories:
+            cat_name = cat.get("name", "Other")
+            lines.append(f"Category: {cat_name}")
+            for product in cat.get("products", []):
+                name = product.get("name", "")
+                variants = product.get("variants", [])
+                variant_str = ", ".join(
+                    f"{v.get('size_label')} = ₹{v.get('price')}"
+                    for v in variants
+                )
+                lines.append(f"  - {name}: {variant_str}")
+            lines.append("")
+
+        lines.append(
+            "Add each product with its category and all variants. "
+            "After adding all products, tell the owner how many were added and ask if they want to make any changes."
+        )
         return "\n".join(lines)

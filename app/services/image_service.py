@@ -199,3 +199,70 @@ Include ALL text visible in the image in the raw_text field."""
     async def process_order_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """Process an order image (WhatsApp screenshot, SMS, etc.) and extract order details."""
         return await self._process_image(image_bytes, ImageType.ORDER)
+
+    async def process_catalog_image(self, image_bytes: bytes) -> Dict[str, Any]:
+        """
+        Extract the full product catalog from a menu/price-list image.
+
+        Returns a structured dict with categories and products, each product
+        having one or more size/price variants.
+
+        Example output:
+        {
+          "categories": [
+            {
+              "name": "Gourmet Cookies",
+              "products": [
+                {
+                  "name": "Oatmeal Raisin",
+                  "variants": [
+                    {"size_label": "250 gms", "price": 400},
+                    {"size_label": "500 gms", "price": 800}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+        """
+        image_b64 = self._encode_image(image_bytes)
+        prompt = """Extract the complete product catalog from this menu/price list image.
+
+For each category and product, extract:
+- Category name (e.g. "Gourmet Cookies", "Gourmet Brownies", "Desserts", "Small Bakes")
+- Product name
+- All size/weight variants with their prices (e.g. "250 gms = 400", "500 gms = 800")
+- If a product has only one price with no size label, use "standard" as the size_label
+
+Return ONLY a JSON object:
+{
+  "categories": [
+    {
+      "name": "<category name>",
+      "products": [
+        {
+          "name": "<product name>",
+          "variants": [
+            {"size_label": "<size or weight or pack>", "price": <number>}
+          ]
+        }
+      ]
+    }
+  ],
+  "confidence": <0.0 to 1.0>,
+  "raw_text": "<all text visible in the image>"
+}
+
+Rules:
+- Extract ALL products visible, do not skip any
+- Prices are numbers only (no currency symbols)
+- size_label examples: "250 gms", "500 gms", "½ kg", "1 kg", "per piece", "Pack of 6", "Pack of 3", "standard"
+- If the image shows column headers like "250 GMS  500 GMS", those are the size labels for all products in that section
+- Preserve exact product names as shown"""
+
+        try:
+            result = await self.llm_service.extract_structured_data_from_image(prompt, image_b64)
+            return result
+        except Exception as e:
+            logger.error(f"Error processing catalog image: {e}", exc_info=True)
+            return {"error": str(e), "categories": []}

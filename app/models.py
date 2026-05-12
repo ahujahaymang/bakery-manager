@@ -117,6 +117,7 @@ class Tenant(Base):
     orders = relationship("Order", back_populates="tenant")
     payments = relationship("Payment", back_populates="tenant")
     audit_logs = relationship("AuditLog", back_populates="tenant")
+    products = relationship("Product", back_populates="tenant")
 
 
 class Customer(Base):
@@ -191,6 +192,7 @@ class Recipe(Base):
     tenant = relationship("Tenant", back_populates="recipes")
     recipe_components = relationship("RecipeComponent", back_populates="recipe", cascade="all, delete-orphan")
     order_items = relationship("OrderItem", back_populates="recipe")
+    product = relationship("Product", back_populates="recipe", uselist=False)  # one product per recipe
 
 
 class RecipeComponent(Base):
@@ -294,3 +296,70 @@ class AuditLog(Base):
     
     # Relationships
     tenant = relationship("Tenant", back_populates="audit_logs")
+
+
+class Product(Base):
+    """
+    Product catalog item — a finished product the owner sells.
+
+    Distinct from Recipe (which tracks ingredients and cost).
+    Prices live in ProductVariant — one product can have multiple size/weight
+    variants (e.g. "250g = ₹400, 500g = ₹800").
+
+    Optionally linked to a Recipe for cost/margin calculation.
+    """
+    __tablename__ = "products"
+
+    product_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    category = Column(String, nullable=True)     # e.g. "Gourmet Cookies", "Desserts"
+    image_url = Column(String, nullable=True)    # Telegram file_id or S3 URL
+
+    # Optional link to a Recipe — NULL means no recipe associated
+    recipe_id = Column(PortableUUID(), ForeignKey("recipes.recipe_id"), nullable=True, index=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('tenant_id', 'name', name='uq_product_tenant_name'),
+    )
+
+    # Relationships
+    tenant = relationship("Tenant", back_populates="products")
+    recipe = relationship("Recipe", back_populates="product")
+    variants = relationship("ProductVariant", back_populates="product",
+                            cascade="all, delete-orphan", order_by="ProductVariant.price")
+
+
+class ProductVariant(Base):
+    """
+    A size/weight/pack variant of a product with its own price.
+
+    Examples:
+      Oatmeal Raisin Cookies — 250 gms → ₹400
+      Oatmeal Raisin Cookies — 500 gms → ₹800
+      Plain Chocolate Brownie — ½ kg   → ₹600
+      Plain Chocolate Brownie — 1 kg   → ₹1200
+      Vanilla Muffin          — per piece → ₹50
+
+    Single-price products have exactly one variant.
+    """
+    __tablename__ = "product_variants"
+
+    variant_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    product_id = Column(PortableUUID(), ForeignKey("products.product_id"), nullable=False, index=True)
+    size_label = Column(String, nullable=False)      # e.g. "250 gms", "½ kg", "per piece", "Pack of 6"
+    price = Column(Numeric(10, 2), nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint('product_id', 'size_label', name='uq_variant_product_size'),
+    )
+
+    # Relationships
+    product = relationship("Product", back_populates="variants")
