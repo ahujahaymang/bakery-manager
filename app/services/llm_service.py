@@ -128,21 +128,10 @@ class LLMService:
                 )
             
             # Parse JSON response from LLM
-            # Handle markdown code blocks if present
-            content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:]  # Remove ```json
-            if content.startswith("```"):
-                content = content[3:]  # Remove ```
-            if content.endswith("```"):
-                content = content[:-3]  # Remove trailing ```
-            content = content.strip()
-            
             try:
-                result_data = json.loads(content)
-            except json.JSONDecodeError as e:
+                result_data = self._parse_json_response(content)
+            except (ValueError, Exception) as e:
                 logger.error(f"Failed to parse LLM response as JSON: {e}")
-                logger.debug(f"LLM response content: {content}")
                 return IntentResult(
                     intent=Intent.UNKNOWN,
                     entities={},
@@ -493,30 +482,15 @@ Now classify the following user message:"""
             response = await self.llm_client.call_llm(
                 messages=messages,
                 temperature=0.2,
-                max_tokens=1500
+                max_tokens=4000  # catalog images need more tokens for 50+ products
             )
             
             content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
             
             if not content:
                 raise ValueError("Empty response from LLM")
-            
-            # Handle markdown code blocks
-            content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-            
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse vision response as JSON: {e}")
-                logger.debug(f"Vision response: {content}")
-                raise ValueError(f"Failed to parse image data: {str(e)}")
+
+            return self._parse_json_response(content)
         
         except Exception as e:
             logger.error(f"Error in vision extraction: {e}", exc_info=True)
@@ -551,22 +525,10 @@ Now classify the following user message:"""
             if not content:
                 raise ValueError("Empty response from LLM")
             
-            # Handle markdown code blocks
-            content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:]
-            if content.startswith("```"):
-                content = content[3:]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-            
             # Parse JSON
             try:
-                return json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse LLM response as JSON: {e}")
-                logger.debug(f"LLM response content: {content}")
+                return self._parse_json_response(content)
+            except ValueError as e:
                 raise ValueError(f"Failed to parse structured data: {str(e)}")
         
         except Exception as e:
@@ -576,3 +538,49 @@ Now classify the following user message:"""
     async def close(self):
         """Close the LLM client connection."""
         await self.llm_client.close()
+
+    def _parse_json_response(self, content: str) -> dict:
+        """
+        Robustly parse a JSON response from an LLM.
+
+        Handles common LLM output issues:
+        - Markdown code fences (```json ... ```)
+        - Trailing commas before } or ]
+        - Single-line // comments
+        - Leading/trailing whitespace
+        - Extracting the first {...} block if surrounded by prose
+        """
+        import re
+
+        text = content.strip()
+
+        # Strip markdown code fences
+        text = re.sub(r'^```(?:json)?\s*', '', text)
+        text = re.sub(r'\s*```$', '', text)
+        text = text.strip()
+
+        # Try direct parse first
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+
+        # Extract the outermost {...} block (handles prose before/after JSON)
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            candidate = match.group(0)
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                # Remove trailing commas before } or ]
+                cleaned = re.sub(r',\s*([}\]])', r'\1', candidate)
+                # Remove // comments
+                cleaned = re.sub(r'//[^\n]*', '', cleaned)
+                try:
+                    return json.loads(cleaned)
+                except json.JSONDecodeError as e:
+                    logger.error(f"JSON parse failed after cleanup: {e}")
+                    logger.debug(f"Cleaned content: {cleaned[:500]}")
+                    raise ValueError(f"Failed to parse image data: {str(e)}")
+
+        raise ValueError(f"No JSON object found in response: {text[:200]}")

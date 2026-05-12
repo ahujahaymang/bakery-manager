@@ -1,286 +1,176 @@
 """
-Error handling module for user-friendly error responses.
+Error Handler — single entry point for all errors shown to owners.
 
-This module provides consistent error formatting and handling for all
-error types in the Bakery Operations Bot.
+Every error that reaches an owner goes through ErrorHandler.handle().
+It does three things in one call:
+  1. Classifies the error and picks a user-friendly message
+  2. Logs it (appears in CloudWatch)
+  3. Notifies the admin via AdminNotifier
+
+Usage:
+    # In any handler or service:
+    msg = await ErrorHandler.handle(error, chat_id, context="show recipes")
+    return msg   # send this to the owner
+
+The AdminNotifier is injected once at startup via ErrorHandler.set_notifier().
 """
 
 import logging
-from typing import Dict, Any, Optional
 from enum import Enum
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 class ErrorType(str, Enum):
-    """Types of errors that can occur in the system."""
-    VALIDATION_ERROR = "validation_error"
-    NOT_FOUND_ERROR = "not_found_error"
-    BUSINESS_LOGIC_ERROR = "business_logic_error"
-    DATABASE_ERROR = "database_error"
-    LLM_ERROR = "llm_error"
-    TELEGRAM_ERROR = "telegram_error"
-    SYSTEM_ERROR = "system_error"
+    VALIDATION    = "validation"
+    NOT_FOUND     = "not_found"
+    BUSINESS      = "business_logic"
+    DATABASE      = "database"
+    LLM           = "llm"
+    IMAGE         = "image_processing"
+    SYSTEM        = "system"
+
+
+# User-facing messages per error type
+_USER_MESSAGES = {
+    ErrorType.VALIDATION: "The information you provided isn't valid. Please check and try again.",
+    ErrorType.NOT_FOUND:  "I couldn't find what you're looking for. Please check the details.",
+    ErrorType.BUSINESS:   None,   # use the exception message directly — it's already user-friendly
+    ErrorType.DATABASE:   "I'm having trouble accessing your data right now. Please try again.",
+    ErrorType.LLM:        "I had trouble understanding that. Please try rephrasing.",
+    ErrorType.IMAGE:      "I couldn't process the image. Please try again with a clearer photo.",
+    ErrorType.SYSTEM:     "Something unexpected happened. Please try again.",
+}
 
 
 class ErrorHandler:
     """
-    Handler for formatting and managing errors.
-    
-    Provides user-friendly error messages without exposing internal details.
+    Single entry point for all owner-facing errors.
+
+    Inject the AdminNotifier once at startup:
+        ErrorHandler.set_notifier(admin_notifier)
+
+    Then call from anywhere:
+        msg = await ErrorHandler.handle(error, chat_id, context="...")
     """
-    
-    @staticmethod
-    def format_error_response(
-        error_type: ErrorType,
-        message: str,
-        details: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+
+    _notifier = None  # AdminNotifier instance, set at startup
+
+    @classmethod
+    def set_notifier(cls, notifier) -> None:
+        """Inject the AdminNotifier. Called once when the bot starts."""
+        cls._notifier = notifier
+
+    @classmethod
+    async def handle(
+        cls,
+        error: Exception,
+        chat_id: str,
+        context: str = "",
+        business_name: Optional[str] = None,
+        notify_admin: bool = True,
+    ) -> str:
         """
-        Format an error into a consistent response structure.
-        
-        Creates a standardized error response that is user-friendly and
-        does not expose internal system details or stack traces.
-        
+        Handle an error end-to-end:
+          1. Classify it
+          2. Build a user-facing message
+          3. Log it
+          4. Notify admin (unless notify_admin=False)
+
         Args:
-            error_type: Type of error that occurred
-            message: User-friendly error message
-            details: Optional additional details (sanitized)
-        
+            error:         The exception that occurred
+            chat_id:       Owner's chat ID (for admin notification)
+            context:       What the owner was doing (e.g. "show recipes", "[catalog image]")
+            business_name: Owner's business name if known
+            notify_admin:  Set False to suppress admin notification (e.g. for expected errors)
+
         Returns:
-            Dict: Formatted error response
-        
-        Requirements:
-            - 23.1: Return user-friendly error messages
-            - 23.2: Never expose internal error details
-            - 23.3: Never expose stack traces
-            - 23.4: Provide actionable guidance when possible
-            - 23.5: Use consistent error format
+            User-facing string to send to the owner.
         """
-        # Log the error for debugging (internal use only)
-        logger.error(f"Error [{error_type}]: {message}")
-        if details:
-            logger.debug(f"Error details: {details}")
-        
-        # Return sanitized error response
-        return {
-            "success": False,
-            "error_type": error_type.value,
-            "message": message,
-            "timestamp": None  # Will be set by caller if needed
-        }
-    
-    @staticmethod
-    def handle_validation_error(error: Exception) -> Dict[str, Any]:
-        """
-        Handle validation errors with user-friendly messages.
-        
-        Args:
-            error: The validation error exception
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        message = str(error)
-        
-        # Ensure the message is user-friendly
-        if not message or "internal" in message.lower() or "exception" in message.lower():
-            message = "The information you provided is not valid. Please check and try again."
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.VALIDATION_ERROR,
-            message=message
+        error_type = cls._classify(error)
+        user_msg = cls._user_message(error_type, error)
+
+        # Log with full detail for CloudWatch
+        logger.error(
+            f"[ERROR] type={error_type.value} chat={chat_id} "
+            f"context={context!r} error={type(error).__name__}: {error}",
+            exc_info=True,
         )
-    
-    @staticmethod
-    def handle_not_found_error(error: Exception, resource_type: str = "item") -> Dict[str, Any]:
+
+        # Notify admin
+        if notify_admin and cls._notifier:
+            try:
+                await cls._notifier.notify_error(
+                    chat_id=chat_id,
+                    user_message=context or "unknown",
+                    error=error,
+                    business_name=business_name,
+                )
+            except Exception as notify_err:
+                logger.error(f"Failed to notify admin of error: {notify_err}")
+
+        return user_msg
+
+    @classmethod
+    def handle_sync(
+        cls,
+        error: Exception,
+        context: str = "",
+    ) -> str:
         """
-        Handle not found errors with user-friendly messages.
-        
-        Args:
-            error: The not found error exception
-            resource_type: Type of resource that was not found
-        
-        Returns:
-            Dict: Formatted error response
+        Synchronous version — logs only, no admin notification.
+        Use when you can't await (e.g. in a sync context).
         """
-        message = str(error)
-        
-        # Provide helpful guidance
-        if not message or "not found" not in message.lower():
-            message = f"The {resource_type} you're looking for was not found. Please check the details and try again."
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.NOT_FOUND_ERROR,
-            message=message
+        error_type = cls._classify(error)
+        logger.error(
+            f"[ERROR] type={error_type.value} context={context!r} "
+            f"error={type(error).__name__}: {error}",
+            exc_info=True,
         )
-    
-    @staticmethod
-    def handle_business_logic_error(error: Exception) -> Dict[str, Any]:
-        """
-        Handle business logic errors with user-friendly messages.
-        
-        Args:
-            error: The business logic error exception
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        message = str(error)
-        
-        # Business logic errors should already have user-friendly messages
-        # from the service layer, so we can use them directly
-        if not message:
-            message = "Unable to complete your request. Please try again."
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.BUSINESS_LOGIC_ERROR,
-            message=message
-        )
-    
-    @staticmethod
-    def handle_database_error(error: Exception) -> Dict[str, Any]:
-        """
-        Handle database errors without exposing internal details.
-        
-        Args:
-            error: The database error exception
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        # Log the actual error for debugging
-        logger.error(f"Database error: {error}", exc_info=True)
-        
-        # Return generic user-friendly message
-        message = (
-            "We're having trouble accessing the database right now. "
-            "Please try again in a moment."
-        )
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.DATABASE_ERROR,
-            message=message
-        )
-    
-    @staticmethod
-    def handle_llm_error(error: Exception) -> Dict[str, Any]:
-        """
-        Handle LLM service errors without exposing internal details.
-        
-        Args:
-            error: The LLM error exception
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        # Log the actual error for debugging
-        logger.error(f"LLM service error: {error}", exc_info=True)
-        
-        # Return generic user-friendly message
-        message = (
-            "I'm having trouble understanding your message right now. "
-            "Could you please try rephrasing it or be more specific?"
-        )
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.LLM_ERROR,
-            message=message
-        )
-    
-    @staticmethod
-    def handle_telegram_error(error: Exception) -> Dict[str, Any]:
-        """
-        Handle Telegram API errors without exposing internal details.
-        
-        Args:
-            error: The Telegram error exception
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        # Log the actual error for debugging
-        logger.error(f"Telegram API error: {error}", exc_info=True)
-        
-        # Return generic user-friendly message
-        message = (
-            "We're having trouble sending your message. "
-            "Please try again in a moment."
-        )
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.TELEGRAM_ERROR,
-            message=message
-        )
-    
-    @staticmethod
-    def handle_system_error(error: Exception) -> Dict[str, Any]:
-        """
-        Handle unexpected system errors without exposing internal details.
-        
-        Args:
-            error: The system error exception
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        # Log the actual error for debugging
-        logger.error(f"System error: {error}", exc_info=True)
-        
-        # Return generic user-friendly message
-        message = (
-            "Something unexpected happened. "
-            "Please try again, and if the problem persists, contact support."
-        )
-        
-        return ErrorHandler.format_error_response(
-            error_type=ErrorType.SYSTEM_ERROR,
-            message=message
-        )
-    
-    @staticmethod
-    def handle_exception(error: Exception) -> Dict[str, Any]:
-        """
-        Handle any exception and route to appropriate handler.
-        
-        Args:
-            error: The exception to handle
-        
-        Returns:
-            Dict: Formatted error response
-        """
-        error_message = str(error).lower()
-        
-        # Route to specific handler based on error message content
-        if "not found" in error_message or "does not exist" in error_message:
-            return ErrorHandler.handle_not_found_error(error)
-        elif any(keyword in error_message for keyword in ["invalid", "must be", "required", "cannot be"]):
-            return ErrorHandler.handle_validation_error(error)
-        elif "database" in error_message or "sql" in error_message:
-            return ErrorHandler.handle_database_error(error)
-        elif "llm" in error_message or "intent" in error_message:
-            return ErrorHandler.handle_llm_error(error)
-        elif "telegram" in error_message:
-            return ErrorHandler.handle_telegram_error(error)
-        else:
-            # Default to business logic error if it has a user-friendly message
-            if error_message and len(error_message) > 10:
-                return ErrorHandler.handle_business_logic_error(error)
-            else:
-                return ErrorHandler.handle_system_error(error)
+        return cls._user_message(error_type, error)
+
+    # ── Internal ───────────────────────────────────────────────────────────
+
+    @classmethod
+    def _classify(cls, error: Exception) -> ErrorType:
+        msg = str(error).lower()
+        name = type(error).__name__.lower()
+
+        if "not found" in msg or "does not exist" in msg:
+            return ErrorType.NOT_FOUND
+        if any(k in msg for k in ("invalid", "must be", "required", "cannot be", "positive")):
+            return ErrorType.VALIDATION
+        if "database" in msg or "sql" in msg or "operational" in name:
+            return ErrorType.DATABASE
+        if "image" in msg or "vision" in msg or "parse image" in msg or "catalog" in msg:
+            return ErrorType.IMAGE
+        if any(k in msg for k in ("llm", "openai", "bedrock", "model", "token", "api")):
+            return ErrorType.LLM
+        if isinstance(error, ValueError) and len(msg) > 10:
+            return ErrorType.BUSINESS
+        return ErrorType.SYSTEM
+
+    @classmethod
+    def _user_message(cls, error_type: ErrorType, error: Exception) -> str:
+        template = _USER_MESSAGES.get(error_type)
+        if template is None:
+            # BUSINESS errors: use the exception message directly
+            msg = str(error)
+            if msg:
+                return f"❌ {msg}"
+            return "❌ Unable to complete your request. Please try again."
+        return f"❌ {template}\n\nIf this keeps happening, use */report* to let us know."
 
 
-def format_error_for_telegram(error_response: Dict[str, Any]) -> str:
-    """
-    Format an error response for display in Telegram.
-    
-    Args:
-        error_response: Error response dictionary from ErrorHandler
-    
-    Returns:
-        str: Formatted error message for Telegram (plain text, no markdown)
-    """
-    message = error_response.get("message", "An error occurred")
-    
-    # Return plain text without markdown to avoid parsing issues
-    return f"❌ {message}"
+# ── Backwards-compat shim ──────────────────────────────────────────────────
+# Some older call sites use format_error_for_telegram(ErrorHandler.handle_exception(e)).
+# Keep this working without changes to those sites.
+
+def format_error_for_telegram(error_response) -> str:
+    """Backwards-compat shim. Prefer ErrorHandler.handle() for new code."""
+    if isinstance(error_response, str):
+        return error_response
+    if isinstance(error_response, dict):
+        return f"❌ {error_response.get('message', 'An error occurred')}"
+    return "❌ An error occurred"

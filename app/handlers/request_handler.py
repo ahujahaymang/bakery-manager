@@ -104,31 +104,20 @@ class RequestHandler:
     ) -> str:
         """
         Called by the platform adapter when an unhandled exception occurs.
-
-        Stores the error context for /report, notifies admin, and returns
-        a user-friendly message with a /report hint.
+        Delegates to ErrorHandler which logs, classifies, and notifies admin.
+        Also stores the error for /report.
         """
-        # Store for /report
         self._last_error[chat_id] = {
             "message": user_message,
             "error": error,
             "business_name": business_name,
         }
-
-        # Notify admin asynchronously — don't let this block the user response
-        try:
-            await self.admin_notifier.notify_error(
-                chat_id=chat_id,
-                user_message=user_message,
-                error=error,
-                business_name=business_name,
-            )
-        except Exception as notify_err:
-            logger.error(f"Failed to notify admin of error: {notify_err}")
-
-        return (
-            "⚠️ Something went wrong while processing your request.\n\n"
-            "Please try again. If the problem persists, use */report* to let us know."
+        from app.error_handler import ErrorHandler
+        return await ErrorHandler.handle(
+            error,
+            chat_id=chat_id,
+            context=user_message,
+            business_name=business_name,
         )
 
     async def handle_text(self, tenant_id: UUID, chat_id: str, text: str) -> str:
@@ -331,8 +320,7 @@ class RequestHandler:
 
     async def _handle_report_command(self, chat_id: str) -> str:
         """
-        /report — send the last error context to admin.
-        Useful when the owner wants to manually escalate an issue.
+        /report — re-send the last error to admin.
         """
         last = self._last_error.get(chat_id)
         if not last:
@@ -340,17 +328,13 @@ class RequestHandler:
                 "ℹ️ No recent error to report.\n\n"
                 "If you're experiencing an issue, describe it and I'll try to help."
             )
-
-        try:
-            await self.admin_notifier.notify_error(
-                chat_id=chat_id,
-                user_message=last["message"],
-                error=last["error"],
-                business_name=last.get("business_name"),
-            )
-        except Exception as e:
-            logger.error(f"Failed to send error report: {e}")
-
+        from app.error_handler import ErrorHandler
+        await ErrorHandler.handle(
+            last["error"],
+            chat_id=chat_id,
+            context=f"[manual /report] {last['message']}",
+            business_name=last.get("business_name"),
+        )
         return (
             "✅ Your error report has been sent to the admin.\n\n"
             "We'll look into it and get back to you."
@@ -491,7 +475,12 @@ class RequestHandler:
 
         result = await self._extract_image_data(image_type, image_bytes)
         if "error" in result:
-            return f"⚠️ {result['error']}"
+            from app.error_handler import ErrorHandler
+            return await ErrorHandler.handle(
+                Exception(result["error"]),
+                chat_id=chat_id,
+                context=f"[{image_type} image]",
+            )
 
         summary = self._summarise_image_result(image_type, result)
         logger.info(f"Image summary ({image_type}): {summary[:200]}")
