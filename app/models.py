@@ -242,6 +242,10 @@ class OrderItem(Base):
     Order item model representing individual items in an order.
     Links orders to recipes with quantity and selling price.
     Stores recipe_name for display even when recipe_id is NULL.
+
+    customization_charge: extra charge for this item (e.g. fondant decoration).
+    The invoice shows (selling_price + customization_charge) as the unit price —
+    customization is not shown separately.
     """
     __tablename__ = "order_items"
     
@@ -251,6 +255,8 @@ class OrderItem(Base):
     recipe_name = Column(String(255), nullable=False)  # Store name for display
     quantity = Column(Integer, nullable=False)
     selling_price = Column(Numeric(10, 2), nullable=False)
+    customization_charge = Column(Numeric(10, 2), nullable=False, default=0)  # extra per-item charge
+    customization_note = Column(String, nullable=True)   # e.g. "fondant decoration"
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     
     # Relationships

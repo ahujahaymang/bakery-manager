@@ -24,6 +24,8 @@ class OrderItemCreate:
     recipe_name: str
     quantity: int
     selling_price: Decimal
+    customization_charge: Decimal = Decimal("0")
+    customization_note: str = None
 
 
 @dataclass
@@ -183,7 +185,9 @@ class OrderService:
                 'recipe': recipe,  # Can be None
                 'recipe_name': item.recipe_name.strip(),
                 'quantity': quantity,
-                'selling_price': selling_price
+                'selling_price': selling_price,
+                'customization_charge': Decimal(str(item.customization_charge or 0)),
+                'customization_note': item.customization_note,
             })
         
         # Create order — use provided address or fall back to customer's default
@@ -204,9 +208,11 @@ class OrderService:
             order_item = OrderItem(
                 order_id=new_order.order_id,
                 recipe_id=item_data['recipe'].recipe_id if item_data['recipe'] else None,
-                recipe_name=item_data['recipe_name'],  # Store the name from order
+                recipe_name=item_data['recipe_name'],
                 quantity=item_data['quantity'],
-                selling_price=item_data['selling_price']
+                selling_price=item_data['selling_price'],
+                customization_charge=item_data['customization_charge'],
+                customization_note=item_data['customization_note'],
             )
             self.db.add(order_item)
         
@@ -323,19 +329,20 @@ class OrderService:
                 OrderItem.order_id == order.order_id
             ).all()
             
-            # Calculate total price
+            # Calculate total price (selling_price + customization_charge per item)
             total_price = Decimal('0')
             items_list = []
             for order_item, recipe in order_items:
-                item_total = order_item.quantity * order_item.selling_price
+                customization = getattr(order_item, 'customization_charge', Decimal('0')) or Decimal('0')
+                effective_price = order_item.selling_price + customization
+                item_total = order_item.quantity * effective_price
                 total_price += item_total
-                # Use stored recipe_name if available, otherwise fall back to recipe.name or "Unknown Item"
                 recipe_name = getattr(order_item, 'recipe_name', None) or (recipe.name if recipe else "Unknown Item")
                 items_list.append({
                     'recipe_name': recipe_name,
                     'quantity': order_item.quantity,
-                    'selling_price': order_item.selling_price,
-                    'item_total': item_total
+                    'selling_price': effective_price,  # combined price for display
+                    'item_total': item_total,
                 })
             
             result.append({

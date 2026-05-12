@@ -13,7 +13,8 @@ class RecipeTools:
            {}),
 
         fn("get_recipe",
-           "Get full recipe details: ingredients, packaging, and cost per unit",
+           "Get full recipe details: ingredients, packaging, and cost per unit. "
+           "Use this when owner asks to 'show recipe', 'show ingredients of', or 'what's in' a recipe.",
            {"name": str_prop()},
            required=["name"]),
 

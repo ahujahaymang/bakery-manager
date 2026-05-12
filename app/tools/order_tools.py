@@ -4,7 +4,8 @@ from app.tools._base import fn, str_prop, enum_prop
 class OrderTools:
     TOOLS = [
         fn("create_order",
-           "Create an order. Check customer's default address first; confirm or ask for a different one.",
+           "Create an order. Check customer's default address first; confirm or ask for a different one. "
+           "After confirming items and price, ask: 'Any customizations? (e.g. fondant decoration, special message)'",
            {
                "customer_identifier": str_prop("Customer name or phone"),
                "delivery_date": str_prop("YYYY-MM-DD"),
@@ -17,6 +18,10 @@ class OrderTools:
                            "recipe_name": {"type": "string"},
                            "quantity": {"type": "integer"},
                            "selling_price": {"type": "number"},
+                           "customization_charge": {"type": "number",
+                                                    "description": "Extra charge for customization (e.g. 200 for fondant). Added to selling_price on invoice."},
+                           "customization_note": {"type": "string",
+                                                  "description": "Description of customization e.g. 'fondant decoration'"},
                        },
                        "required": ["recipe_name", "quantity", "selling_price"],
                    },

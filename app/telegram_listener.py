@@ -126,7 +126,13 @@ class TelegramBotListener:
         )
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle inline keyboard button presses (admin tenant switching)."""
+        """
+        Handle inline keyboard button presses.
+
+        Supported callback_data formats:
+          switch:<chat_id>   — admin tenant switching
+          choose:<value>     — generic choice selection (sends value as a new message)
+        """
         query = update.callback_query
         await query.answer()
 
@@ -135,12 +141,38 @@ class TelegramBotListener:
 
         if data.startswith("switch:"):
             target_chat_id = data[len("switch:"):]
-            # Delegate to handler's switch logic
             response = self.handler._handle_switch_command(chat_id, f"/switch {target_chat_id}")
             try:
                 await query.edit_message_text(response, parse_mode="Markdown")
             except Exception:
                 await query.edit_message_text(response)
+
+        elif data.startswith("choose:"):
+            # User picked an option — treat it as if they typed it
+            chosen = data[len("choose:"):]
+            try:
+                await query.edit_message_text(f"✅ Selected: *{chosen}*", parse_mode="Markdown")
+            except Exception:
+                pass
+            # Inject the choice as a new message into the conversation
+            if update.effective_message:
+                registry_db = next(get_registry_db())
+                try:
+                    tenant = TenantService(registry_db).get_or_create_tenant(chat_id)
+                    tenant_id = tenant.tenant_id
+                finally:
+                    registry_db.close()
+
+                try:
+                    response = await asyncio.wait_for(
+                        self.handler.handle_text(tenant_id, chat_id, chosen),
+                        timeout=REQUEST_TIMEOUT,
+                    )
+                    await update.effective_message.reply_text(
+                        response, parse_mode="Markdown"
+                    )
+                except Exception as e:
+                    logger.error(f"Error handling choice callback: {e}", exc_info=True)
 
     async def _send(self, update: Update, text: str):
         """Send with Markdown, fall back to plain text."""
@@ -148,6 +180,33 @@ class TelegramBotListener:
             await update.message.reply_text(text, parse_mode="Markdown")
         except Exception:
             await update.message.reply_text(text)
+
+    def _build_choice_keyboard(self, response: str):
+        """
+        Parse a CHOOSE: marker and return (display_text, InlineKeyboardMarkup).
+
+        Format: CHOOSE:<title>\n<option1>\n<option2>\n...
+
+        Returns (None, None) if no CHOOSE: marker found.
+        """
+        if "CHOOSE:" not in response:
+            return None, None
+
+        # Split at CHOOSE: marker
+        before, rest = response.split("CHOOSE:", 1)
+        lines = rest.strip().split("\n")
+        title = lines[0].strip() if lines else "Please choose:"
+        options = [l.strip() for l in lines[1:] if l.strip()]
+
+        if not options:
+            return None, None
+
+        buttons = [
+            [InlineKeyboardButton(text=opt, callback_data=f"choose:{opt}")]
+            for opt in options
+        ]
+        display = (before.strip() + "\n\n" + title).strip() if before.strip() else title
+        return display, InlineKeyboardMarkup(buttons)
 
     async def _edit(self, message, text: str):
         """Edit an existing message with Markdown, fall back to plain text."""
@@ -209,7 +268,20 @@ class TelegramBotListener:
                     caption="📄 Here's your invoice!",
                 )
             else:
-                await self._edit(thinking_msg, response)
+                # Check for CHOOSE: inline keyboard marker
+                display, keyboard = self._build_choice_keyboard(response)
+                if keyboard:
+                    await self._edit(thinking_msg, display)
+                    await update.message.reply_text(
+                        display, parse_mode="Markdown", reply_markup=keyboard
+                    )
+                    # Remove the thinking message since we sent a new one
+                    try:
+                        await thinking_msg.delete()
+                    except Exception:
+                        pass
+                else:
+                    await self._edit(thinking_msg, response)
 
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)

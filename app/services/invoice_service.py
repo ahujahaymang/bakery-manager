@@ -231,7 +231,10 @@ class InvoiceService:
             Payment.order_id == order_id
         ).all()
 
-        subtotal     = sum(i.quantity * i.selling_price for i in order_items)
+        subtotal = sum(
+            i.quantity * (i.selling_price + (i.customization_charge or Decimal("0")))
+            for i in order_items
+        )
         amount_paid  = sum(p.amount for p in payments)
         amount_due   = subtotal - amount_paid
 
@@ -239,8 +242,9 @@ class InvoiceService:
             InvoiceItem(
                 description=item.recipe_name,
                 quantity=item.quantity,
-                unit_price=item.selling_price,
-                total=item.quantity * item.selling_price,
+                # Combined price: customization folded into unit price, not shown separately
+                unit_price=item.selling_price + (item.customization_charge or Decimal("0")),
+                total=item.quantity * (item.selling_price + (item.customization_charge or Decimal("0"))),
             )
             for item in order_items
         ]

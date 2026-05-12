@@ -62,9 +62,16 @@ class ToolExecutor:
 
     async def _tool_get_customer(self, args):
         svc = CustomerService(self.db)
-        customers = svc.get_customer(self.tenant_id, args["search"])
+        search = args.get("search", "").strip()
+        if not search:
+            # No search term — list all customers
+            customers = svc.list_customers(self.tenant_id)
+            if not customers:
+                return "No customers found"
+            return "\n".join(f"{c.name} - {c.phone}" for c in customers)
+        customers = svc.get_customer(self.tenant_id, search)
         if not customers:
-            return f"No customer found matching '{args['search']}'"
+            return f"No customer found matching '{search}'"
         lines = []
         for c in customers:
             line = f"{c.name} ({c.phone})"
@@ -140,16 +147,20 @@ class ToolExecutor:
         recipe = svc.create_recipe(self.tenant_id, args["name"], args["yield_per_batch"])
         result = f"Recipe created: {recipe.name} (yield: {recipe.yield_per_batch} units/batch)"
 
-        # Suggest product link if matching unlinked products exist
+        # Suggest recipe link if matching unlinked products exist
         from app.services.product_service import ProductService
         prod_svc = ProductService(self.db)
         matches = prod_svc.find_matching_products_for_recipe(self.tenant_id, recipe.name)
         if matches:
-            names = ", ".join(f"'{p.name}'" for p in matches[:3])
-            result += (
-                f"\n\n💡 Found matching product(s) in catalog: {names}. "
-                f"Link this recipe? Use: `link product <name> to recipe {recipe.name}`"
-            )
+            if len(matches) == 1:
+                result += (
+                    f"\n\nCHOOSE:💡 Found a matching product — link recipe *{recipe.name}* to it?\n"
+                    f"Yes, link to {matches[0].name}\n"
+                    f"No, skip"
+                )
+            else:
+                options = "\n".join(p.name for p in matches[:5])
+                result += f"\n\nCHOOSE:💡 Which product does this recipe belong to?\n{options}\nNone of these"
         return result
 
     async def _tool_replace_recipe(self, args):
@@ -292,7 +303,9 @@ class ToolExecutor:
             OrderItemCreate(
                 recipe_name=i["recipe_name"],
                 quantity=int(i["quantity"]),
-                selling_price=Decimal(str(i["selling_price"]))
+                selling_price=Decimal(str(i["selling_price"])),
+                customization_charge=Decimal(str(i.get("customization_charge", 0))),
+                customization_note=i.get("customization_note"),
             )
             for i in args["items"]
         ]
@@ -313,7 +326,12 @@ class ToolExecutor:
             lines.append(f"Delivery address: {order.delivery_address}")
         lines.append("Items:")
         for item in items:
-            lines.append(f"  {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}")
+            line = f"  {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}"
+            if item.customization_charge and item.customization_charge > 0:
+                line += f" + ₹{item.customization_charge} customization"
+                if item.customization_note:
+                    line += f" ({item.customization_note})"
+            lines.append(line)
 
         if hasattr(order, "_missing_recipes") and order._missing_recipes:
             lines.append(f"\nNote: These recipes don't exist yet: {', '.join(order._missing_recipes)}")
@@ -533,11 +551,15 @@ class ToolExecutor:
         # Suggest recipe link if matching recipes exist
         matches = svc.find_matching_recipes_for_product(self.tenant_id, product.name)
         if matches:
-            names = ", ".join(f"*{r.name}*" for r in matches[:3])
-            lines.append(
-                f"\n💡 Found matching recipe(s): {names}. "
-                f"Link one? Use: `link product {product.name} to recipe <name>`"
-            )
+            if len(matches) == 1:
+                lines.append(
+                    f"\nCHOOSE:💡 Found a matching recipe — link it to *{product.name}*?\n"
+                    f"Yes, link {matches[0].name}\n"
+                    f"No, skip"
+                )
+            else:
+                options = "\n".join(r.name for r in matches[:5])
+                lines.append(f"\nCHOOSE:💡 Which recipe belongs to *{product.name}*?\n{options}\nNone of these")
 
         return "\n".join(lines)
 
