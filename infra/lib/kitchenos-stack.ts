@@ -33,7 +33,7 @@ export interface KitchenOsStackProps extends cdk.StackProps {
 
   /**
    * Monthly budget threshold in USD. Alarm fires when forecast exceeds this.
-   * Default: 20 (USD).
+   * Default: 2 (USD) — covers EBS + minimal CloudWatch overage if free tier expires.
    */
   monthlyBudgetUsd?: number;
 }
@@ -56,7 +56,7 @@ export class KitchenOsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: KitchenOsStackProps) {
     super(scope, id, props);
 
-    const { deploymentId, dbEngine, alertEmail, monthlyBudgetUsd = 20 } = props;
+    const { deploymentId, dbEngine, alertEmail, monthlyBudgetUsd = 2 } = props;
     const slug = deploymentId.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     const prefix = `kitchenos-${slug}`;
 

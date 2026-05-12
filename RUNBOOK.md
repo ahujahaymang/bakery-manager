@@ -176,7 +176,7 @@ cdk deploy \
   --context deploymentId=prod \
   --context dbEngine=sqlite \
   --context alertEmail=YOUR_EMAIL@example.com \
-  --context monthlyBudgetUsd=20 \
+  --context monthlyBudgetUsd=2 \
   --context skipVolumeAttachment=true
 ```
 
@@ -190,6 +190,42 @@ to activate the subscription before alerts start arriving.
 > The app itself (owner error reports, feedback, feature requests) notifies
 > you via **Telegram** to your `ADMIN_CHAT_ID` (`6834633517`). No email needed
 > for those — they come straight to your Telegram.
+
+---
+
+## AWS free tier status
+
+Everything we use is either free tier eligible or has a permanent free allowance.
+The 12-month free tier started when your AWS account was created.
+
+| Service | What we use | Free tier | Cost after free tier |
+|---|---|---|---|
+| **EC2 t3.micro** | 1 instance, 24/7 | 750 hrs/month for 12 months | ~$8.50/month |
+| **EBS gp3** | 28GB total (20GB root + 8GB data) | 30GB/month for 12 months | ~$2.24/month |
+| **S3** | ~72 backup files × ~1MB | 5GB storage, 2K PUTs/month for 12 months | Negligible (<$0.01) |
+| **CloudWatch Logs** | App logs, low volume | 5GB ingestion + 5GB storage free **always** | $0.50/GB after |
+| **CloudWatch Alarms** | 2 alarms (CPU + status check) | 10 alarms free **always** | $0.10/alarm/month |
+| **SNS** | Alarm notifications | 1M publishes + 1K email/month free **always** | Negligible |
+| **SSM Parameter Store** | ~8 standard parameters | Standard tier free **always** | Free |
+| **IAM** | Roles and policies | Always free | Free |
+| **Bedrock Nova Lite** | Agent/intent calls | No free tier — pay per token | $0.06/$0.24 per 1M tokens |
+| **OpenAI gpt-4o-mini** | Image processing only | No free tier | ~$0.15/$0.60 per 1M tokens |
+| **Cloudflare Tunnel** | Webhook URL | Free plan | Free |
+
+**Bottom line during free tier (first 12 months):**
+- AWS cost: ~$0 (EC2 + EBS within free limits)
+- Bedrock: ~$0.01–0.05/month at low usage (a few hundred messages/day)
+- OpenAI: ~$0.01–0.02/month (image processing only, not every message)
+- **Total: well under $1/month** — the $2 budget alarm is a safety net
+
+**After free tier expires:**
+- EC2 + EBS: ~$10.74/month
+- Everything else: same
+- **Total: ~$11–12/month** at low usage — raise the budget alarm to $15 at that point
+
+> **Note:** Bedrock has no free tier but Nova Lite is extremely cheap.
+> 1,000 messages/day × ~500 tokens each = ~15M tokens/month = ~$3.60/month at full usage.
+> At early-stage volumes (50–100 messages/day) it's under $0.20/month.
 
 ---
 

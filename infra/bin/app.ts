@@ -41,7 +41,7 @@ const dbEngine = app.node.tryGetContext('dbEngine') ?? 'sqlite';
 const alertEmail = app.node.tryGetContext('alertEmail') as string | undefined;
 const monthlyBudgetUsd = app.node.tryGetContext('monthlyBudgetUsd')
   ? Number(app.node.tryGetContext('monthlyBudgetUsd'))
-  : 20;
+  : 2;
 
 if (deploymentId) {
   if (!['sqlite', 'rds'].includes(dbEngine)) {
