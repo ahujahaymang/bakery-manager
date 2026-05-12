@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     BEDROCK_MODEL: str = "amazon.nova-lite-v1:0"
     AWS_REGION: str = "us-east-1"
     # Bedrock uses IAM credentials (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY env vars)
+
+    # Agent backend: "bedrock" (default) or "gpt" (fallback to OpenAI GPT-4o mini)
+    AGENT_BACKEND: str = "bedrock"
     # or instance profile when running on EC2
 
     # ── S3 backup (SQLite only) ────────────────────────────────────────────
