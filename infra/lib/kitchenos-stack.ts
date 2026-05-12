@@ -362,11 +362,18 @@ export class KitchenOsStack extends cdk.Stack {
     // ── Monitoring & Alarms ───────────────────────────────────────────────
 
     // CloudWatch Log Group — app writes here via the CloudWatch agent
-    const logGroup = new logs.LogGroup(this, 'AppLogGroup', {
-      logGroupName: `/kitchenos/${slug}/app`,
-      retention: logs.RetentionDays.ONE_MONTH,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-    });
+    // Import if it already exists (e.g. from a previous deploy attempt),
+    // otherwise create it. The skipLogGroupCreation context flag handles this.
+    const skipLogGroupCreation = this.node.tryGetContext('skipLogGroupCreation') === 'true';
+    const logGroupName = `/kitchenos/${slug}/app`;
+
+    const logGroup = skipLogGroupCreation
+      ? logs.LogGroup.fromLogGroupName(this, 'AppLogGroup', logGroupName)
+      : new logs.LogGroup(this, 'AppLogGroup', {
+          logGroupName,
+          retention: logs.RetentionDays.ONE_MONTH,
+          removalPolicy: cdk.RemovalPolicy.RETAIN,
+        });
 
     // Allow EC2 to write logs to CloudWatch
     role.addToPolicy(new iam.PolicyStatement({
