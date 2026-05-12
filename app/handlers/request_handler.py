@@ -982,7 +982,8 @@ class RequestHandler:
             "_'Show this week\\'s profit'_\n\n"
 
             "📸 *Images*\n"
-            "• Send a photo of a recipe, receipt, or order screenshot\n\n"
+            "• Send a photo of a recipe, receipt, or order screenshot\n"
+            "• Send your *price list / menu* with caption *catalog* to import all products at once\n\n"
 
             "📱 *Instagram*\n"
             "• Say *connect instagram* to auto-detect orders from your DMs\n\n"
