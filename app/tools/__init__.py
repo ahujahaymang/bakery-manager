@@ -54,6 +54,8 @@ Order rules:
   Example: "2 kg tiramisu at ₹900/½kg" → quantity=4, selling_price=900 (total = 4×900 = ₹3600)
 - After confirming items and price, always ask: "Any customizations? (e.g. fondant decoration, special message, extra tier)"
 - If yes, add customization_charge and customization_note to the item — it will be folded into the price on the invoice
+- For "generate invoice for X": call generate_invoice directly — do NOT call get_customer first
+- Never ask clarifying questions you can answer by calling a tool
 
 Product catalog rules:
 - Products are what the owner sells; recipes are internal production instructions
