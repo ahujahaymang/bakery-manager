@@ -318,9 +318,36 @@ class TelegramBotListener:
             finally:
                 registry_db.close()
 
-            # Step 2: process image with timeout — handler opens its own DB session
+            # Step 2: process image — show a progress indicator that updates
+            # every 15 seconds so the user knows it's still working
             thinking_msg = await update.message.reply_text("🔍 Processing image...")
 
+            # Progress messages shown while waiting (cycled every 15s)
+            _progress = [
+                "🔍 Reading image...",
+                "🧠 Extracting data...",
+                "⚙️ Saving to catalog...",
+                "📦 Almost done...",
+            ]
+
+            async def _update_progress():
+                """Edit the thinking message every 15s to show it's still working."""
+                for msg in _progress:
+                    await asyncio.sleep(15)
+                    try:
+                        await thinking_msg.edit_text(msg)
+                    except Exception:
+                        pass
+                # After cycling through, keep repeating the last one
+                while True:
+                    await asyncio.sleep(15)
+                    try:
+                        await thinking_msg.edit_text("⏳ Still processing, please wait...")
+                    except Exception:
+                        pass
+
+            # Run progress updater alongside the actual processing
+            progress_task = asyncio.create_task(_update_progress())
             try:
                 response = await asyncio.wait_for(
                     self.handler.handle_image(tenant_id, chat_id, photo_bytes, caption),
@@ -332,6 +359,8 @@ class TelegramBotListener:
                     "⏱ Image processing took too long. Please try again.\n"
                     "Make sure the image is clear and well-lit."
                 )
+            finally:
+                progress_task.cancel()
 
             await self._edit(thinking_msg, response)
         except Exception as e:
