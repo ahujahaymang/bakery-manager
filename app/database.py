@@ -113,26 +113,31 @@ class _TenantEngineRegistry:
 
     def _seed_tenant_row(self, engine: Engine, tenant_id: UUID) -> None:
         """
-        Insert the tenant's own row into the business database.
+        Ensure the tenant's own row exists in the business database.
 
         The business DB has a tenants table (created by Base.metadata.create_all)
         but it starts empty. FK constraints on customers, orders, etc. require
-        the tenant row to exist. We insert it here on first access.
+        the tenant row to exist.
+
+        On first access of a brand-new DB: insert a minimal placeholder row.
+        On re-open of an existing DB: do nothing — never overwrite real data.
         """
         from sqlalchemy.orm import sessionmaker
         from datetime import datetime
+        import sqlalchemy as sa
 
-        Session = sessionmaker(bind=engine)
-        session = Session()
+        SessionLocal = sessionmaker(bind=engine)
+        session = SessionLocal()
         try:
-            # Check if already seeded (e.g. existing DB being re-opened after restart)
             result = session.execute(
-                __import__('sqlalchemy').text("SELECT COUNT(*) FROM tenants WHERE tenant_id = :tid"),
+                sa.text("SELECT COUNT(*) FROM tenants WHERE tenant_id = :tid"),
                 {"tid": str(tenant_id)}
             ).scalar()
             if result == 0:
+                # Brand-new DB — insert a minimal placeholder so FK constraints pass.
+                # TenantService will populate business_name, chat_id, etc. during onboarding.
                 session.execute(
-                    __import__('sqlalchemy').text(
+                    sa.text(
                         "INSERT INTO tenants (tenant_id, chat_id, subscription_status, messaging_platform, created_at, updated_at) "
                         "VALUES (:tid, :cid, 'pending', 'telegram', :now, :now)"
                     ),
@@ -140,6 +145,7 @@ class _TenantEngineRegistry:
                 )
                 session.commit()
                 logger.info(f"Seeded tenant row in business DB for {tenant_id}")
+            # If row already exists, never touch it — real data must not be overwritten.
         except Exception as e:
             session.rollback()
             logger.warning(f"Could not seed tenant row: {e}")
