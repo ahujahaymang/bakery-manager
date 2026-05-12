@@ -198,15 +198,47 @@ class ToolExecutor:
         return f"Recipe updated: {recipe.name} (yield: {recipe.yield_per_batch}/batch)"
 
     async def _tool_add_recipe_component(self, args):
-        svc = RecipeService(self.db)
-        svc.add_component(
+        """
+        Add a component to a recipe.
+
+        If the inventory item doesn't exist yet, auto-create it as a placeholder
+        with cost 0 so the recipe can be saved immediately. The user can update
+        costs later via add_inventory or update_inventory.
+        """
+        inv_svc = InventoryService(self.db)
+        recipe_svc = RecipeService(self.db)
+
+        item_name = args["item_name"]
+        component_type = args["component_type"]
+
+        # Auto-create inventory placeholder if item doesn't exist
+        item = inv_svc.get_item(self.tenant_id, item_name)
+        created_placeholder = False
+        if not item:
+            # Infer a sensible default unit from component type
+            default_unit = "g" if component_type == "ingredient" else "pcs"
+            inv_svc.create_item(
+                tenant_id=self.tenant_id,
+                name=item_name,
+                category=component_type,
+                quantity=Decimal("0"),
+                unit=default_unit,
+                cost_per_unit=Decimal("0"),
+            )
+            created_placeholder = True
+
+        recipe_svc.add_component(
             tenant_id=self.tenant_id,
             recipe_name=args["recipe_name"],
-            item_name=args["item_name"],
+            item_name=item_name,
             quantity=Decimal(str(args["quantity"])),
-            component_type=args["component_type"]
+            component_type=component_type,
         )
-        return f"Added {args['item_name']} ({args['quantity']}) to {args['recipe_name']}"
+
+        msg = f"Added {item_name} ({args['quantity']}) to {args['recipe_name']}"
+        if created_placeholder:
+            msg += " [inventory placeholder created — update cost later]"
+        return msg
 
     async def _tool_remove_recipe_component(self, args):
         svc = RecipeService(self.db)

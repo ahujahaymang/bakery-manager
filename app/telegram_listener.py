@@ -191,17 +191,7 @@ class TelegramBotListener:
                     "Make sure the image is clear and well-lit."
                 )
 
-            if response is None:
-                await self._edit(thinking_msg, (
-                    "📸 I received your image!\n\n"
-                    "Please add a caption to tell me what it is:\n"
-                    "• *recipe* — handwritten or printed recipe\n"
-                    "• *receipt* — payment receipt or bill\n"
-                    "• *order* — WhatsApp/SMS order screenshot"
-                ))
-            else:
-                await self._edit(thinking_msg, response)
-
+            await self._edit(thinking_msg, response)
         except Exception as e:
             logger.error(f"Error handling photo: {e}", exc_info=True)
             try:

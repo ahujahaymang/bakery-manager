@@ -192,7 +192,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "add_recipe_component",
-            "description": "Add an ingredient or packaging item to a recipe",
+            "description": "Add an ingredient or packaging item to a recipe. If the inventory item does not exist yet, it will be created automatically as a placeholder with cost 0. Never call add_inventory before this — just call this directly with the item name.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -440,6 +440,11 @@ Guidelines:
 - Use ₹ for currency
 - Dates should be in YYYY-MM-DD format when calling tools
 - When user says "replace" or "yes" or "new name" in context of a previous question, understand the context and act accordingly
+
+Recipe creation rules:
+- To add a recipe: call create_recipe, then call add_recipe_component for each ingredient/packaging
+- NEVER call add_inventory before add_recipe_component — add_recipe_component handles missing items automatically
+- After saving a recipe with new ingredients, tell the user: "Recipe saved! Some ingredients were added as placeholders with ₹0 cost. Update their prices in inventory for accurate cost calculations."
 """
 
 

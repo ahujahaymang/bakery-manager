@@ -71,6 +71,8 @@ class RequestHandler:
         self._admin_target: Dict[str, UUID] = {}
         # Last error per chat — stored for /report command
         self._last_error: Dict[str, dict] = {}
+        # Pending images awaiting type clarification: {chat_id: image_bytes}
+        self._pending_images: Dict[str, bytes] = {}
 
     # Per-chat onboarding state: tracks chats awaiting business name input
     # {chat_id: True}  — simple flag, no expiry needed (cleared on name save)
@@ -180,6 +182,20 @@ class RequestHandler:
         # /request <text> — send feature request to admin
         if text.lower().startswith("/request"):
             return await self._handle_request_command(chat_id, text, tenant_id)
+
+        # Pending image clarification — user replied with image type
+        if chat_id in self._pending_images:
+            image_type = self._detect_image_type(text)
+            if image_type:
+                image_bytes = self._pending_images.pop(chat_id)
+                return await self.handle_image(tenant_id, chat_id, image_bytes, text)
+            else:
+                return (
+                    "Please reply with one of:\n"
+                    "• *recipe* — handwritten or printed recipe\n"
+                    "• *receipt* — payment receipt or bill\n"
+                    "• *order* — WhatsApp/SMS order screenshot"
+                )
 
         # Step 1: brand new user — no history, no business name set yet
         if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
@@ -439,25 +455,38 @@ class RequestHandler:
         chat_id: str,
         image_bytes: bytes,
         caption: str,
-    ) -> Optional[str]:
+    ) -> str:
         """
         Process an image message and return the agent's response.
 
-        The handler opens its own DB session for the correct tenant.
-        Callers only need to supply tenant_id and chat_id.
+        If the caption clearly identifies the image type (recipe/receipt/order),
+        process it immediately. If the caption is missing or unrecognised, store
+        the image and ask the user to clarify — never fail silently.
 
         Args:
             tenant_id: Tenant UUID
             chat_id: Unique conversation identifier
             image_bytes: Raw image bytes
-            caption: User-provided caption (determines image type)
+            caption: User-provided caption (may be empty or unrecognised)
 
         Returns:
-            Response string, or None if caption is missing/unrecognised
+            Response string to deliver to the user (never None)
         """
         image_type = self._detect_image_type(caption)
+
         if image_type is None:
-            return None
+            # Store image bytes so we can process them once the user clarifies
+            self._pending_images[chat_id] = image_bytes
+            return (
+                "📸 Got your image! What type is it?\n\n"
+                "Please reply with one of:\n"
+                "• *recipe* — handwritten or printed recipe\n"
+                "• *receipt* — payment receipt or bill\n"
+                "• *order* — WhatsApp/SMS order screenshot"
+            )
+
+        # Clear any pending image for this chat (user sent a new one with a caption)
+        self._pending_images.pop(chat_id, None)
 
         result = await self._extract_image_data(image_type, image_bytes)
         if "error" in result:
