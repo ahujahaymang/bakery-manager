@@ -29,8 +29,10 @@ from app.instagram_listener import InstagramListener
 
 logger = logging.getLogger(__name__)
 
-# How long to wait for the agent before giving up (seconds)
-REQUEST_TIMEOUT = 90
+# How long to wait for text requests (seconds)
+REQUEST_TIMEOUT = 60
+# How long to wait for image processing — vision + agent planning can be slow for large catalogs
+IMAGE_TIMEOUT = 180
 
 
 class TelegramBotListener:
@@ -322,7 +324,7 @@ class TelegramBotListener:
             try:
                 response = await asyncio.wait_for(
                     self.handler.handle_image(tenant_id, chat_id, photo_bytes, caption),
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=IMAGE_TIMEOUT,
                 )
             except asyncio.TimeoutError:
                 logger.warning(f"Image processing timed out for chat_id={chat_id}")
