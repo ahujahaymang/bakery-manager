@@ -15,6 +15,7 @@ from app.services.agent_service import AgentService
 from app.services.tool_executor import ToolExecutor
 from app.services.image_service import ImageService
 from app.services.llm_service import LLMService
+from app.services.admin_notifier import AdminNotifier
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -38,18 +39,24 @@ class RequestHandler:
     platform I/O: receiving messages, downloading files, sending replies.
     """
 
-    def __init__(self, instagram_listener=None, send_to_admin_fn=None):
+    def __init__(
+        self,
+        admin_notifier: Optional[AdminNotifier] = None,
+        instagram_listener=None,
+    ):
         self.agent = AgentService()
         self.llm_service = LLMService()
         self.image_service = ImageService(self.llm_service)
         self.instagram_listener = instagram_listener
-        self._send_to_admin = send_to_admin_fn
+        self.admin_notifier = admin_notifier or AdminNotifier(
+            admin_chat_id=settings.ADMIN_CHAT_ID or ""
+        )
         # Per-chat message history: {chat_id: [{role, content}, ...]}
         self._history: Dict[str, List[dict]] = defaultdict(list)
         # Admin tenant override: {admin_chat_id: tenant_id}
         self._admin_target: Dict[str, UUID] = {}
-        # Pending admin notifications (new signups, etc.)
-        self._pending_admin_notifications: List[tuple] = []
+        # Last error per chat — stored for /report command
+        self._last_error: Dict[str, dict] = {}
 
     # Per-chat onboarding state: tracks chats awaiting business name input
     # {chat_id: True}  — simple flag, no expiry needed (cleared on name save)
@@ -71,6 +78,42 @@ class RequestHandler:
             self._history[chat_id] = history[-MAX_HISTORY:]
 
     # ── Public API ─────────────────────────────────────────────────────────
+
+    async def handle_error(
+        self,
+        chat_id: str,
+        user_message: str,
+        error: Exception,
+        business_name: Optional[str] = None,
+    ) -> str:
+        """
+        Called by the platform adapter when an unhandled exception occurs.
+
+        Stores the error context for /report, notifies admin, and returns
+        a user-friendly message with a /report hint.
+        """
+        # Store for /report
+        self._last_error[chat_id] = {
+            "message": user_message,
+            "error": error,
+            "business_name": business_name,
+        }
+
+        # Notify admin asynchronously — don't let this block the user response
+        try:
+            await self.admin_notifier.notify_error(
+                chat_id=chat_id,
+                user_message=user_message,
+                error=error,
+                business_name=business_name,
+            )
+        except Exception as notify_err:
+            logger.error(f"Failed to notify admin of error: {notify_err}")
+
+        return (
+            "⚠️ Something went wrong while processing your request.\n\n"
+            "Please try again. If the problem persists, use */report* to let us know."
+        )
 
     async def handle_text(self, db, tenant_id: UUID, chat_id: str, text: str) -> str:
         """
@@ -97,14 +140,6 @@ class RequestHandler:
             Response string to deliver to the user
         """
         if self._is_admin(chat_id):
-            # Deliver any pending notifications first
-            if self._pending_admin_notifications and self._send_to_admin:
-                for target_chat_id, msg in self._pending_admin_notifications:
-                    try:
-                        await self._send_to_admin(target_chat_id, msg)
-                    except Exception:
-                        pass
-                self._pending_admin_notifications.clear()
             return await self._handle_admin_message(db, tenant_id, chat_id, text)
 
         # Privacy command — available to all users at any time
@@ -117,6 +152,18 @@ class RequestHandler:
                 "• You can request deletion of all your data at any time\n\n"
                 "To request account deletion, contact us and we will process it within 7 days."
             )
+
+        # /report — send last error context to admin
+        if text.lower() == "/report":
+            return await self._handle_report_command(chat_id)
+
+        # /feedback <text> — send feedback to admin
+        if text.lower().startswith("/feedback"):
+            return await self._handle_feedback_command(chat_id, text, tenant_id)
+
+        # /request <text> — send feature request to admin
+        if text.lower().startswith("/request"):
+            return await self._handle_request_command(chat_id, text, tenant_id)
 
         # Step 1: brand new user — no history, no business name set yet
         if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
@@ -227,7 +274,7 @@ class RequestHandler:
     async def _notify_admin_new_signup(
         self, tenant_id: UUID, business_name: str, country: str
     ) -> None:
-        """Notify admin of a new signup so they can approve the trial."""
+        """Notify admin of a new signup via AdminNotifier."""
         if not settings.ADMIN_CHAT_ID:
             return
 
@@ -240,29 +287,97 @@ class RequestHandler:
         finally:
             reg_db.close()
 
-        msg = (
-            f"🆕 *New signup!*\n\n"
-            f"*Business:* {business_name}\n"
-            f"*Country:* {country}\n"
-            f"*Chat ID:* `{chat_id}`\n\n"
-            f"To start their 7-day trial:\n"
-            f"`/trial {chat_id}`\n\n"
-            f"To approve 30-day subscription:\n"
-            f"`/approve {chat_id} 30`"
+        try:
+            await self.admin_notifier.notify_new_signup(
+                chat_id=chat_id,
+                business_name=business_name,
+                country=country,
+            )
+        except Exception as e:
+            logger.warning(f"Could not notify admin of new signup: {e}")
+
+    # ── Owner commands ─────────────────────────────────────────────────────
+
+    async def _handle_report_command(self, chat_id: str) -> str:
+        """
+        /report — send the last error context to admin.
+        Useful when the owner wants to manually escalate an issue.
+        """
+        last = self._last_error.get(chat_id)
+        if not last:
+            return (
+                "ℹ️ No recent error to report.\n\n"
+                "If you're experiencing an issue, describe it and I'll try to help."
+            )
+
+        try:
+            await self.admin_notifier.notify_error(
+                chat_id=chat_id,
+                user_message=last["message"],
+                error=last["error"],
+                business_name=last.get("business_name"),
+            )
+        except Exception as e:
+            logger.error(f"Failed to send error report: {e}")
+
+        return (
+            "✅ Your error report has been sent to the admin.\n\n"
+            "We'll look into it and get back to you."
         )
 
-        # Store notification for admin — will be sent on next admin message
-        # or immediately if we have a send function available
-        if hasattr(self, '_send_to_admin') and self._send_to_admin:
-            try:
-                await self._send_to_admin(settings.ADMIN_CHAT_ID, msg)
-            except Exception as e:
-                logger.warning(f"Could not notify admin of new signup: {e}")
-        else:
-            # Store for delivery — admin will see it on next interaction
-            self._pending_admin_notifications.append(
-                (settings.ADMIN_CHAT_ID, msg)
+    async def _handle_feedback_command(
+        self, chat_id: str, text: str, tenant_id: UUID
+    ) -> str:
+        """
+        /feedback <text> — send feedback to admin.
+        """
+        feedback_text = text[len("/feedback"):].strip()
+        if not feedback_text:
+            return (
+                "📝 Please include your feedback after the command.\n\n"
+                "Example: `/feedback The invoice PDF looks great!`"
             )
+
+        business_name = await self._get_business_name(tenant_id)
+        try:
+            await self.admin_notifier.notify_feedback(
+                chat_id=chat_id,
+                feedback_text=feedback_text,
+                business_name=business_name,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send feedback: {e}")
+
+        return "✅ Thank you for your feedback! We really appreciate it."
+
+    async def _handle_request_command(
+        self, chat_id: str, text: str, tenant_id: UUID
+    ) -> str:
+        """
+        /request <text> — send a feature request to admin.
+        """
+        request_text = text[len("/request"):].strip()
+        if not request_text:
+            return (
+                "💡 Please describe the feature after the command.\n\n"
+                "Example: `/request Add support for bulk order imports`"
+            )
+
+        business_name = await self._get_business_name(tenant_id)
+        try:
+            await self.admin_notifier.notify_feature_request(
+                chat_id=chat_id,
+                request_text=request_text,
+                business_name=business_name,
+            )
+        except Exception as e:
+            logger.error(f"Failed to send feature request: {e}")
+
+        return (
+            "💡 Your feature request has been logged!\n\n"
+            "We review all requests and prioritise based on demand. "
+            "Thank you for helping us improve."
+        )
 
     async def _check_subscription(self, tenant_id: UUID, chat_id: str) -> Optional[str]:
         """
@@ -601,9 +716,18 @@ class RequestHandler:
                 f"You have full access to all features.\n\n"
                 + self._capabilities_message()
             )
-            if self._send_to_admin:
-                import asyncio
-                asyncio.create_task(self._send_to_admin(target_chat_id, owner_msg))
+            import asyncio
+            asyncio.create_task(
+                self.admin_notifier.send_to_user(target_chat_id, owner_msg)
+            )
+            asyncio.create_task(
+                self.admin_notifier.notify_subscription_event(
+                    chat_id=target_chat_id,
+                    business_name=name,
+                    event="subscription_activated",
+                    days=days,
+                )
+            )
 
             return (
                 f"✅ *{name}* subscription activated!\n"
@@ -655,9 +779,18 @@ class RequestHandler:
                 f"Your *{trial_days}-day free trial* has started. You now have full access.\n\n"
                 + self._capabilities_message()
             )
-            if self._send_to_admin:
-                import asyncio
-                asyncio.create_task(self._send_to_admin(target_chat_id, owner_msg))
+            import asyncio
+            asyncio.create_task(
+                self.admin_notifier.send_to_user(target_chat_id, owner_msg)
+            )
+            asyncio.create_task(
+                self.admin_notifier.notify_subscription_event(
+                    chat_id=target_chat_id,
+                    business_name=name,
+                    event="trial_started",
+                    days=trial_days,
+                )
+            )
 
             return f"✅ *{name}* trial started — {remaining} days remaining. Owner has been notified."
         finally:

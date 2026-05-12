@@ -191,16 +191,45 @@ print(f'Backed up to: {key}')
 
 ## Updating the bot
 
-```bash
-# Connect to the instance
-aws ssm start-session --target INSTANCE_ID
+Use the safe deploy script — it smoke-tests the new code and auto-rolls back
+if the service fails to start:
 
-# On the instance:
-cd /opt/bakery
-git pull
-pip3.11 install -r requirements.txt
-python3.11 -m alembic upgrade head   # run any new migrations
-systemctl restart bakery-bot
+```bash
+# Remotely (no SSH needed):
+aws ssm send-command \
+  --instance-ids INSTANCE_ID \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["bash /opt/kitchenos/scripts/deploy.sh"]' \
+  --region us-east-1
+
+# Or connect and run directly:
+aws ssm start-session --target INSTANCE_ID
+bash /opt/kitchenos/scripts/deploy.sh
+```
+
+The script:
+1. Clones latest code to a staging directory (production untouched)
+2. Installs dependencies
+3. Runs a smoke test (import check) — aborts if it fails
+4. Runs database migrations — aborts if they fail
+5. Tags the current working commit as a rollback point
+6. Swaps directories and restarts the service
+7. Checks the service is still running 8 seconds later
+8. Auto-rolls back to the previous version if the health check fails
+
+### Manual rollback
+
+If you need to roll back manually:
+
+```bash
+# List available rollback tags
+git -C /opt/kitchenos tag -l "deploy-*" | sort | tail -5
+
+# Roll back to a specific tag
+git -C /opt/kitchenos-old checkout deploy-20260512-1430
+mv /opt/kitchenos /opt/kitchenos-broken
+mv /opt/kitchenos-old /opt/kitchenos
+systemctl restart kitchenos
 ```
 
 ---
@@ -265,15 +294,30 @@ aws ec2 delete-volume --volume-id vol-XXXXXXXXX
 
 ## Monitoring
 
-The bot logs to systemd journal. To stream logs:
+Application logs go to both systemd journal and CloudWatch Logs (via the
+CloudWatch agent installed by the CDK stack).
 
 ```bash
+# Stream logs via SSM (quick check)
 aws ssm start-session --target INSTANCE_ID
-journalctl -u bakery-bot -f
+journalctl -u kitchenos -f
+
+# View in CloudWatch (persistent, searchable)
+aws logs tail /kitchenos/prod/app --follow --region us-east-1
 ```
 
-For production, consider shipping logs to CloudWatch Logs by adding the
-CloudWatch agent to the user-data script. Cost: ~$0.50/month per bakery.
+CloudWatch alarms are configured for:
+- **CPU > 80%** for 5 minutes → SNS → email
+- **EC2 status check failed** → SNS → email
+- **Monthly cost forecast > 80% of budget** → email
+- **Monthly cost exceeds budget** → email
+
+To add your email to alerts when deploying:
+```bash
+cdk deploy --context deploymentId=prod --context dbEngine=sqlite \
+  --context alertEmail=you@example.com \
+  --context monthlyBudgetUsd=20
+```
 
 ---
 

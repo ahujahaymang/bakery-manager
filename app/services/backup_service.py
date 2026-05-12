@@ -68,6 +68,13 @@ class BackupService:
             try:
                 from app.database import get_all_tenant_db_paths
                 paths = get_all_tenant_db_paths() or [self.db_path]
+
+                # Always include tenants.db (the registry) in the backup set
+                from pathlib import Path as _Path
+                tenants_db = _Path(self.db_path).parent / "tenants.db"
+                if tenants_db.exists() and str(tenants_db) not in [str(p) for p in paths]:
+                    paths = list(paths) + [str(tenants_db)]
+
                 for path in paths:
                     key = await asyncio.get_event_loop().run_in_executor(
                         None, lambda p=path: self._do_backup(p)

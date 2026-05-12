@@ -18,6 +18,7 @@ from app.services.image_service import ImageService
 from app.services.agent_service import AgentService
 from app.services.tool_executor import ToolExecutor
 from app.services.backup_service import BackupService, create_backup_service
+from app.services.admin_notifier import AdminNotifier, NotificationType
 
 __all__ = [
     "TenantService",
@@ -36,4 +37,6 @@ __all__ = [
     "ToolExecutor",
     "BackupService",
     "create_backup_service",
+    "AdminNotifier",
+    "NotificationType",
 ]

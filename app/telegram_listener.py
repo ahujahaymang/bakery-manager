@@ -21,6 +21,7 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from app.database import get_db, get_registry_db
 from app.services.tenant_service import TenantService
 from app.handlers.request_handler import RequestHandler
+from app.services.admin_notifier import AdminNotifier
 from app.error_handler import ErrorHandler, format_error_for_telegram
 from app.config import settings
 from app.services.backup_service import create_backup_service
@@ -41,9 +42,13 @@ class TelegramBotListener:
             raise ValueError("TELEGRAM_BOT_TOKEN must be configured")
 
         self.instagram = InstagramListener(notify_owner_fn=self._send_to_chat)
+        self.admin_notifier = AdminNotifier(
+            admin_chat_id=settings.ADMIN_CHAT_ID or "",
+            # send_fn wired after application starts
+        )
         self.handler = RequestHandler(
+            admin_notifier=self.admin_notifier,
             instagram_listener=self.instagram,
-            send_to_admin_fn=self._send_to_chat
         )
         self.application = None
         self.backup = create_backup_service()
@@ -145,7 +150,9 @@ class TelegramBotListener:
         except Exception as e:
             logger.error(f"Error handling message: {e}", exc_info=True)
             try:
-                error_msg = format_error_for_telegram(ErrorHandler.handle_exception(e))
+                chat_id = str(update.message.chat_id) if update.message else "unknown"
+                text = update.message.text.strip() if update.message and update.message.text else ""
+                error_msg = await self.handler.handle_error(chat_id, text, e)
                 await update.message.reply_text(error_msg)
             except Exception:
                 pass
@@ -206,9 +213,10 @@ class TelegramBotListener:
         except Exception as e:
             logger.error(f"Error handling photo: {e}", exc_info=True)
             try:
-                await update.message.reply_text(
-                    format_error_for_telegram(ErrorHandler.handle_exception(e))
-                )
+                chat_id = str(update.message.chat_id) if update.message else "unknown"
+                caption = update.message.caption or "" if update.message else ""
+                error_msg = await self.handler.handle_error(chat_id, f"[photo] {caption}", e)
+                await update.message.reply_text(error_msg)
             except Exception:
                 pass
 
@@ -218,7 +226,7 @@ class TelegramBotListener:
 
         # Wire send function now that application exists
         self.instagram.notify_owner = self._send_to_chat
-        self.handler._send_to_admin = self._send_to_chat
+        self.admin_notifier.set_send_fn(self._send_to_chat)
 
         # Start webhook server in background thread (for Instagram/WhatsApp webhooks)
         self._start_webhook_server()

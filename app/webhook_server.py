@@ -9,9 +9,14 @@ Start alongside the Telegram bot:
     uvicorn app.webhook_server:app --host 0.0.0.0 --port 8000
 """
 
+import hashlib
+import hmac
 import logging
-from fastapi import FastAPI
+
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +32,38 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+async def _verify_meta_signature(request: Request) -> bytes:
+    """
+    Verify the X-Hub-Signature-256 header sent by Meta on every webhook POST.
+
+    Raises HTTP 403 if the signature is missing or invalid.
+    Returns the raw request body so callers don't need to read it again.
+    """
+    body = await request.body()
+
+    # Skip verification if the app secret is not configured (dev/test mode)
+    if not settings.META_APP_SECRET:
+        logger.warning("META_APP_SECRET not set — skipping webhook signature verification")
+        return body
+
+    signature_header = request.headers.get("X-Hub-Signature-256", "")
+    if not signature_header.startswith("sha256="):
+        logger.warning("Missing or malformed X-Hub-Signature-256 header")
+        raise HTTPException(status_code=403, detail="Missing webhook signature")
+
+    expected = "sha256=" + hmac.new(
+        settings.META_APP_SECRET.encode(),
+        body,
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature_header, expected):
+        logger.warning("Webhook signature mismatch — possible spoofed request")
+        raise HTTPException(status_code=403, detail="Invalid webhook signature")
+
+    return body
 
 
 @app.get("/health")

@@ -3,6 +3,12 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as rds from 'aws-cdk-lib/aws-rds';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as budgets from 'aws-cdk-lib/aws-budgets';
 import { Construct } from 'constructs';
 
 export interface KitchenOsStackProps extends cdk.StackProps {
@@ -18,6 +24,18 @@ export interface KitchenOsStackProps extends cdk.StackProps {
    *   "rds"    — PostgreSQL on RDS (high-volume or compliance)
    */
   dbEngine: 'sqlite' | 'rds';
+
+  /**
+   * Email address to receive CloudWatch alarms and budget alerts.
+   * If omitted, alarms are created but no email subscription is added.
+   */
+  alertEmail?: string;
+
+  /**
+   * Monthly budget threshold in USD. Alarm fires when forecast exceeds this.
+   * Default: 20 (USD).
+   */
+  monthlyBudgetUsd?: number;
 }
 
 /**
@@ -38,7 +56,7 @@ export class KitchenOsStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: KitchenOsStackProps) {
     super(scope, id, props);
 
-    const { deploymentId, dbEngine } = props;
+    const { deploymentId, dbEngine, alertEmail, monthlyBudgetUsd = 20 } = props;
     const slug = deploymentId.toLowerCase().replace(/[^a-z0-9-]/g, '-');
     const prefix = `kitchenos-${slug}`;
 
@@ -188,6 +206,29 @@ export class KitchenOsStack extends cdk.Stack {
       'yum update -y',
       'yum install -y python3.11 python3.11-pip git',
 
+      // Install and configure CloudWatch agent for application logs
+      'yum install -y amazon-cloudwatch-agent',
+      `cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWEOF'`,
+      '{',
+      '  "logs": {',
+      '    "logs_collected": {',
+      '      "files": {',
+      '        "collect_list": [',
+      '          {',
+      `            "file_path": "/var/log/kitchenos/app.log",`,
+      `            "log_group_name": "/kitchenos/${slug}/app",`,
+      '            "log_stream_name": "{instance_id}",',
+      '            "timestamp_format": "%Y-%m-%d %H:%M:%S"',
+      '          }',
+      '        ]',
+      '      }',
+      '    }',
+      '  }',
+      '}',
+      'CWEOF',
+      '/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json',
+      'mkdir -p /var/log/kitchenos',
+
       // Mount EBS data volume for SQLite files
       ...(dbEngine === 'sqlite' ? [
         'mkdir -p /data',
@@ -255,6 +296,8 @@ export class KitchenOsStack extends cdk.Stack {
       'Restart=always',
       'RestartSec=10',
       'EnvironmentFile=/opt/kitchenos/.env',
+      'StandardOutput=append:/var/log/kitchenos/app.log',
+      'StandardError=append:/var/log/kitchenos/app.log',
       '',
       '[Install]',
       'WantedBy=multi-user.target',
@@ -308,6 +351,109 @@ export class KitchenOsStack extends cdk.Stack {
       });
     }
 
+    // ── Monitoring & Alarms ───────────────────────────────────────────────
+
+    // CloudWatch Log Group — app writes here via the CloudWatch agent
+    const logGroup = new logs.LogGroup(this, 'AppLogGroup', {
+      logGroupName: `/kitchenos/${slug}/app`,
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // Allow EC2 to write logs to CloudWatch
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: [
+        'logs:CreateLogGroup',
+        'logs:CreateLogStream',
+        'logs:PutLogEvents',
+        'logs:DescribeLogStreams',
+      ],
+      resources: [logGroup.logGroupArn, `${logGroup.logGroupArn}:*`],
+    }));
+
+    // SNS topic for all alarms
+    const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
+      topicName: `${prefix}-alarms`,
+      displayName: `KitchenOS ${deploymentId} Alarms`,
+    });
+
+    if (alertEmail) {
+      alarmTopic.addSubscription(
+        new snsSubscriptions.EmailSubscription(alertEmail)
+      );
+    }
+
+    // EC2 CPU utilisation alarm — fires when CPU > 80% for 5 minutes
+    new cloudwatch.Alarm(this, 'CpuAlarm', {
+      alarmName: `${prefix}-cpu-high`,
+      alarmDescription: 'EC2 CPU utilisation above 80% for 5 minutes',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/EC2',
+        metricName: 'CPUUtilization',
+        dimensionsMap: { InstanceId: instance.instanceId },
+        period: cdk.Duration.minutes(5),
+        statistic: 'Average',
+      }),
+      threshold: 80,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
+    // EC2 status check alarm — fires when instance fails system/instance checks
+    new cloudwatch.Alarm(this, 'StatusCheckAlarm', {
+      alarmName: `${prefix}-status-check-failed`,
+      alarmDescription: 'EC2 instance or system status check failed',
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/EC2',
+        metricName: 'StatusCheckFailed',
+        dimensionsMap: { InstanceId: instance.instanceId },
+        period: cdk.Duration.minutes(5),
+        statistic: 'Maximum',
+      }),
+      threshold: 1,
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(new cloudwatchActions.SnsAction(alarmTopic));
+
+    // AWS Budget alarm — fires when monthly forecast exceeds threshold
+    new budgets.CfnBudget(this, 'MonthlyBudget', {
+      budget: {
+        budgetName: `${prefix}-monthly-budget`,
+        budgetType: 'COST',
+        timeUnit: 'MONTHLY',
+        budgetLimit: {
+          amount: monthlyBudgetUsd,
+          unit: 'USD',
+        },
+      },
+      notificationsWithSubscribers: alertEmail ? [
+        {
+          notification: {
+            notificationType: 'FORECASTED',
+            comparisonOperator: 'GREATER_THAN',
+            threshold: 80,  // alert at 80% of budget
+            thresholdType: 'PERCENTAGE',
+          },
+          subscribers: [
+            { subscriptionType: 'EMAIL', address: alertEmail },
+          ],
+        },
+        {
+          notification: {
+            notificationType: 'ACTUAL',
+            comparisonOperator: 'GREATER_THAN',
+            threshold: 100,  // alert when budget is exceeded
+            thresholdType: 'PERCENTAGE',
+          },
+          subscribers: [
+            { subscriptionType: 'EMAIL', address: alertEmail },
+          ],
+        },
+      ] : [],
+    });
+
     // ── Outputs ───────────────────────────────────────────────────────────
     new cdk.CfnOutput(this, 'InstanceId', {
       value: instance.instanceId,
@@ -317,6 +463,16 @@ export class KitchenOsStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'InstancePublicIp', {
       value: instance.instancePublicIp,
       description: 'Public IP (for webhook server / ngrok alternative)',
+    });
+
+    new cdk.CfnOutput(this, 'LogGroupName', {
+      value: logGroup.logGroupName,
+      description: 'CloudWatch Log Group — view app logs in the AWS console',
+    });
+
+    new cdk.CfnOutput(this, 'AlarmTopicArn', {
+      value: alarmTopic.topicArn,
+      description: 'SNS topic ARN for CloudWatch alarms',
     });
 
     if (backupBucket) {
