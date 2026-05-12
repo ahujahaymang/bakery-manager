@@ -241,6 +241,13 @@ class BedrockClient:
 
         text = " ".join(text_parts) if text_parts else ""
 
+        # Strip Nova chain-of-thought tags so the agent layer is model-agnostic
+        import re
+        text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<response>(.*?)</response>', r'\1', text, flags=re.DOTALL)
+        text = re.sub(r'<answer>(.*?)</answer>', r'\1', text, flags=re.DOTALL)
+        text = text.strip()
+
         # Map Bedrock stop reasons to OpenAI finish reasons
         finish_reason_map = {
             "end_turn": "stop",
