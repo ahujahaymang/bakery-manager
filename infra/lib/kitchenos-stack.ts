@@ -344,11 +344,19 @@ export class KitchenOsStack extends cdk.Stack {
         removalPolicy: cdk.RemovalPolicy.RETAIN,
       });
 
-      new ec2.CfnVolumeAttachment(this, 'DataVolumeAttachment', {
-        instanceId: instance.instanceId,
-        volumeId: dataVolume.volumeId,
-        device: '/dev/xvdf',
-      });
+      // Only create the attachment on first deploy.
+      // On subsequent deploys the volume is already attached — skip to avoid
+      // the "already attached to an instance" CloudFormation error.
+      const skipAttachment = this.node.tryGetContext('skipVolumeAttachment') === 'true';
+      if (!skipAttachment) {
+        const attachment = new ec2.CfnVolumeAttachment(this, 'DataVolumeAttachment', {
+          instanceId: instance.instanceId,
+          volumeId: dataVolume.volumeId,
+          device: '/dev/xvdf',
+        });
+        // Retain on delete — never detach the data volume automatically
+        attachment.cfnOptions.deletionPolicy = cdk.CfnDeletionPolicy.RETAIN;
+      }
     }
 
     // ── Monitoring & Alarms ───────────────────────────────────────────────

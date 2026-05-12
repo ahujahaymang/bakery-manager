@@ -176,8 +176,13 @@ cdk deploy \
   --context deploymentId=prod \
   --context dbEngine=sqlite \
   --context alertEmail=YOUR_EMAIL@example.com \
-  --context monthlyBudgetUsd=20
+  --context monthlyBudgetUsd=20 \
+  --context skipVolumeAttachment=true
 ```
+
+> `skipVolumeAttachment=true` is required on all deploys after the first one.
+> The EBS volume is already attached to the instance — omitting this flag
+> causes CloudFormation to fail with "already attached to an instance".
 
 AWS will send a confirmation email to that address — you must click the link
 to activate the subscription before alerts start arriving.
