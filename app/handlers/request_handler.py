@@ -488,7 +488,15 @@ class RequestHandler:
 
         active_tenant_id = self._resolve_admin_tenant(chat_id, tenant_id)
         label = self._admin_label(db, active_tenant_id)
-        response = await self._run_agent(db, active_tenant_id, chat_id, text)
+
+        # Open the correct DB for the active tenant — the incoming `db` is
+        # connected to the admin's own tenant, not the switched-to tenant.
+        from app.database import get_db
+        active_db = next(get_db(active_tenant_id))
+        try:
+            response = await self._run_agent(active_db, active_tenant_id, chat_id, text)
+        finally:
+            active_db.close()
 
         # File response (e.g. invoice PDF) — pass through as-is, no label prefix
         if isinstance(response, tuple):
