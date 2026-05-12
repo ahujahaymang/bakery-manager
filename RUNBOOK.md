@@ -8,6 +8,36 @@ Quick reference for deploying, monitoring, and recovering the production bot.
 
 ---
 
+## Adding new columns to existing tables (SQLite)
+
+SQLite uses `Base.metadata.create_all` which only creates new tables — it never
+alters existing ones. When a new column is added to a model, run this on the server:
+
+```bash
+aws ssm send-command \
+  --instance-ids i-0ff48b32abce4a930 \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=[
+    "cat > /tmp/migrate.py << '"'"'PYEOF'"'"'",
+    "import sqlite3, glob",
+    "for db in glob.glob(\"/data/*.db\"):",
+    "    if db.endswith((\"-wal\",\"-shm\")): continue",
+    "    conn = sqlite3.connect(db)",
+    "    cols = [r[1] for r in conn.execute(\"PRAGMA table_info(TABLE_NAME)\").fetchall()]",
+    "    if \"NEW_COLUMN\" not in cols:",
+    "        conn.execute(\"ALTER TABLE TABLE_NAME ADD COLUMN NEW_COLUMN TYPE DEFAULT VALUE\")",
+    "        print(f\"Migrated {db}\")",
+    "    conn.commit(); conn.close()",
+    "PYEOF",
+    "python3.11 /tmp/migrate.py && systemctl restart kitchenos"
+  ]' \
+  --region us-east-1
+```
+
+Replace `TABLE_NAME`, `NEW_COLUMN`, `TYPE`, and `DEFAULT VALUE` as needed.
+
+---
+
 ## Connect to the server
 
 ```bash
