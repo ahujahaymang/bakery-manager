@@ -158,38 +158,38 @@ CloudWatch alarms notify via email when:
 |---|---|
 | CPU high | CPU > 80% for 5 minutes |
 | Status check failed | EC2 instance/system check fails |
-| Budget 80% | Monthly spend forecast hits 80% of $20 |
-| Budget exceeded | Monthly spend exceeds $20 |
+| Budget 80% | Monthly spend forecast hits 80% of $2 |
+| Budget exceeded | Monthly spend exceeds $2 |
 
 The alert email is set at CDK deploy time — see **Setting up alerts** below.
 
 ---
 
-## Setting up alerts (one-time CDK deploy)
+## Setting up alerts / CDK deploy
 
-Alerts go to whatever email you pass when deploying the CDK stack.
-This is separate from the app — it's an AWS-level configuration.
+Any time you need to update the CDK stack (alerts, alarms, IAM, etc.), use this command.
+Both skip flags are **required** — omitting them causes CloudFormation errors on an existing stack.
 
 ```bash
 cd infra
-cdk deploy \
+./node_modules/.bin/cdk deploy \
   --context deploymentId=prod \
   --context dbEngine=sqlite \
-  --context alertEmail=YOUR_EMAIL@example.com \
+  --context alertEmail=kitchen.ai.os@gmail.com \
   --context monthlyBudgetUsd=2 \
-  --context skipVolumeAttachment=true
+  --context skipVolumeAttachment=true \
+  --context skipLogGroupCreation=true
 ```
 
-> `skipVolumeAttachment=true` is required on all deploys after the first one.
-> The EBS volume is already attached to the instance — omitting this flag
-> causes CloudFormation to fail with "already attached to an instance".
+| Flag | Why it's needed |
+|---|---|
+| `skipVolumeAttachment=true` | EBS data volume is already attached — CloudFormation would error or detach it without this |
+| `skipLogGroupCreation=true` | CloudWatch log group `/kitchenos/prod/app` already exists — CloudFormation can't recreate it |
 
-AWS will send a confirmation email to that address — you must click the link
-to activate the subscription before alerts start arriving.
+AWS will send a confirmation email to `kitchen.ai.os@gmail.com` when the SNS subscription is created.
+You must click the link in that email to activate alarm notifications.
 
-> The app itself (owner error reports, feedback, feature requests) notifies
-> you via **Telegram** to your `ADMIN_CHAT_ID` (`6834633517`). No email needed
-> for those — they come straight to your Telegram.
+> Owner error reports, feedback, and feature requests come via **Telegram** to `ADMIN_CHAT_ID` (`6834633517`). No email needed for those.
 
 ---
 
@@ -226,6 +226,44 @@ The 12-month free tier started when your AWS account was created.
 > **Note:** Bedrock has no free tier but Nova Lite is extremely cheap.
 > 1,000 messages/day × ~500 tokens each = ~15M tokens/month = ~$3.60/month at full usage.
 > At early-stage volumes (50–100 messages/day) it's under $0.20/month.
+
+---
+
+## Emergency: EBS data volume detached
+
+If the data volume gets detached (e.g. after a CDK deploy gone wrong), the bot will
+fail to read/write databases. Symptoms: bot starts but all commands error, or service
+fails to start with "no such file or directory" on `/data`.
+
+```bash
+# 1. Confirm the volume is detached
+aws ec2 describe-volumes \
+  --volume-ids vol-0a032e059eb0a5e9d \
+  --region us-east-1 \
+  --query 'Volumes[0].Attachments[0].State' \
+  --output text
+# Expected: "available" (detached) or missing output
+
+# 2. Reattach it
+aws ec2 attach-volume \
+  --volume-id vol-0a032e059eb0a5e9d \
+  --instance-id i-0ff48b32abce4a930 \
+  --device /dev/xvdf \
+  --region us-east-1
+
+# 3. Wait for attachment, then remount and restart on the instance
+aws ssm send-command \
+  --instance-ids i-0ff48b32abce4a930 \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["mount /dev/xvdf /data", "systemctl restart kitchenos", "sleep 5", "systemctl is-active kitchenos"]' \
+  --region us-east-1 \
+  --query 'Command.CommandId' --output text
+```
+
+**Data volume details:**
+- Volume ID: `vol-0a032e059eb0a5e9d`
+- Device: `/dev/xvdf` → mounted at `/data`
+- Contains all tenant SQLite databases
 
 ---
 
