@@ -496,12 +496,21 @@ class RequestHandler:
         summary = self._summarise_image_result(image_type, result)
         logger.info(f"Image summary ({image_type}): {summary[:200]}")
 
+        # All image types use the same Plan → Execute → Summarise flow.
+        # Data is already extracted above (one GPT-vision call).
+        # The agent plans all tool calls in one LLM call, executes them
+        # in parallel, then summarises in one final LLM call.
         with _open_db(tenant_id) as db:
-            return await self._run_agent(
-                db, tenant_id, chat_id,
+            executor = ToolExecutor(db, tenant_id)
+            response = await self.agent.run(
                 user_message=summary,
-                history_label=f"[Image: {image_type}]",
+                history=self._get_history(chat_id),
+                tool_executor=executor.execute,
             )
+
+        self._append(chat_id, "user", f"[Image: {image_type}]")
+        self._append(chat_id, "assistant", response)
+        return response
 
     async def close(self) -> None:
         """Shut down the agent and LLM client."""
