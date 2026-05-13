@@ -103,6 +103,10 @@ class Tenant(Base):
     instagram_account_id = Column(String, nullable=True)    # Instagram user/page ID
     instagram_access_token = Column(String, nullable=True)  # long-lived access token
 
+    # Order template — owner's custom order form structure (plain text)
+    # Used by the agent to parse pasted order forms without asking for each field
+    order_template = Column(Text, nullable=True)
+
     # Primary messaging platform: "telegram" | "whatsapp"
     # Instagram order notifications are sent via this platform
     messaging_platform = Column(String, nullable=False, default="telegram")
@@ -118,6 +122,7 @@ class Tenant(Base):
     payments = relationship("Payment", back_populates="tenant")
     audit_logs = relationship("AuditLog", back_populates="tenant")
     products = relationship("Product", back_populates="tenant")
+    conversation_messages = relationship("ConversationMessage", back_populates="tenant")
 
 
 class Customer(Base):
@@ -302,6 +307,30 @@ class AuditLog(Base):
     
     # Relationships
     tenant = relationship("Tenant", back_populates="audit_logs")
+
+
+class ConversationMessage(Base):
+    """
+    Persisted conversation history for a tenant's chat.
+
+    Replaces the in-memory _history dict in RequestHandler so that
+    context survives server restarts and is queryable for debugging.
+
+    chat_id is stored alongside tenant_id because the admin chat may
+    operate multiple tenants — each (tenant_id, chat_id) pair has its
+    own independent history.
+    """
+    __tablename__ = "conversation_messages"
+
+    message_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    chat_id = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False)       # "user" | "assistant" | "tool"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    tenant = relationship("Tenant", back_populates="conversation_messages")
 
 
 class Product(Base):

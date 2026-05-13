@@ -141,6 +141,21 @@ class TenantService:
         self.db.refresh(tenant)
         return tenant
 
+    def set_order_template(self, tenant_id, template: str) -> Tenant:
+        """Save the owner's custom order form template."""
+        tenant = self.get_tenant_by_id(tenant_id)
+        if not tenant:
+            raise ValueError(f"Tenant not found: {tenant_id}")
+        tenant.order_template = template.strip()
+        self.db.commit()
+        self.db.refresh(tenant)
+        return tenant
+
+    def get_order_template(self, tenant_id) -> Optional[str]:
+        """Return the owner's saved order template, or None if not set."""
+        tenant = self.get_tenant_by_id(tenant_id)
+        return tenant.order_template if tenant else None
+
     def set_messaging_platform(self, tenant_id, platform: str) -> Tenant:
         """
         Set the primary messaging platform for a tenant.

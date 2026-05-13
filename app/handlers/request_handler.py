@@ -66,6 +66,8 @@ class RequestHandler:
             admin_chat_id=settings.ADMIN_CHAT_ID or ""
         )
         # Per-chat message history: {chat_id: [{role, content}, ...]}
+        # NOTE: kept as a fallback cache for onboarding checks (has_history).
+        # Actual message content is persisted via ConversationService.
         self._history: Dict[str, List[dict]] = defaultdict(list)
         # Admin tenant override: {admin_chat_id: tenant_id}
         self._admin_target: Dict[str, UUID] = {}
@@ -83,15 +85,27 @@ class RequestHandler:
     # ── History ────────────────────────────────────────────────────────────
 
     def _get_history(self, chat_id: str) -> List[dict]:
-        """Return the conversation history for a chat."""
+        """Return the conversation history for a chat (in-memory cache only).
+        Used for onboarding checks — actual LLM history comes from DB via _load_history."""
         return self._history[chat_id]
 
+    def _load_history(self, db, tenant_id: UUID, chat_id: str) -> List[dict]:
+        """Load persisted conversation history from DB for the LLM."""
+        from app.services.conversation_service import ConversationService
+        return ConversationService(db, tenant_id).load(chat_id)
+
     def _append(self, chat_id: str, role: str, content: str) -> None:
-        """Append a message to history, trimming to MAX_HISTORY."""
+        """Update in-memory cache only (used for onboarding state checks)."""
         history = self._history[chat_id]
         history.append({"role": role, "content": content})
         if len(history) > MAX_HISTORY:
             self._history[chat_id] = history[-MAX_HISTORY:]
+
+    def _persist(self, db, tenant_id: UUID, chat_id: str, role: str, content: str) -> None:
+        """Write a message to the DB and update the in-memory cache."""
+        from app.services.conversation_service import ConversationService
+        ConversationService(db, tenant_id).append(chat_id, role, content)
+        self._append(chat_id, role, content)
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -493,12 +507,11 @@ class RequestHandler:
             executor = ToolExecutor(db, tenant_id)
             response = await self.agent.run(
                 user_message=summary,
-                history=self._get_history(chat_id),
+                history=self._load_history(db, tenant_id, chat_id),
                 tool_executor=executor.execute,
             )
-
-        self._append(chat_id, "user", f"[Image: {image_type}]")
-        self._append(chat_id, "assistant", response)
+            self._persist(db, tenant_id, chat_id, "user", f"[Image: {image_type}]")
+            self._persist(db, tenant_id, chat_id, "assistant", response)
         return response
 
     async def close(self) -> None:
@@ -615,6 +628,10 @@ class RequestHandler:
                 return f"❌ No tenant found with chat_id `{target_chat_id}`"
             self._admin_target[admin_chat_id] = tenant.tenant_id
             self._history[admin_chat_id] = []
+            # Clear persisted history for the admin chat in the new tenant's DB
+            with _open_db(tenant.tenant_id) as db:
+                from app.services.conversation_service import ConversationService
+                ConversationService(db, tenant.tenant_id).clear(admin_chat_id)
             return f"✅ Switched to tenant `{target_chat_id}`"
         finally:
             reg_db.close()
@@ -907,11 +924,11 @@ class RequestHandler:
         executor = ToolExecutor(db, tenant_id)
         response = await self.agent.run(
             user_message=user_message,
-            history=self._get_history(chat_id),
+            history=self._load_history(db, tenant_id, chat_id),
             tool_executor=executor.execute,
         )
         history_entry = f"{history_label} {user_message}".strip() if history_label else user_message
-        self._append(chat_id, "user", history_entry)
+        self._persist(db, tenant_id, chat_id, "user", history_entry)
 
         # Check if the agent produced an invoice PDF
         if isinstance(response, str) and response.startswith("INVOICE_PDF:"):
@@ -919,7 +936,7 @@ class RequestHandler:
             parts = response.split(":", 2)
             filename = parts[1]
             pdf_bytes = base64.b64decode(parts[2])
-            self._append(chat_id, "assistant", f"[Invoice PDF: {filename}]")
+            self._persist(db, tenant_id, chat_id, "assistant", f"[Invoice PDF: {filename}]")
             return pdf_bytes, filename
 
         # Check if the agent produced an Instagram connect URL
@@ -939,10 +956,10 @@ class RequestHandler:
                     f"🔗 [Connect Instagram]({url})\n\n"
                     "_The link opens in your browser. After connecting, come back here._"
                 )
-            self._append(chat_id, "assistant", msg)
+            self._persist(db, tenant_id, chat_id, "assistant", msg)
             return msg
 
-        self._append(chat_id, "assistant", response)
+        self._persist(db, tenant_id, chat_id, "assistant", response)
         return response
 
     # ── Welcome ────────────────────────────────────────────────────────────

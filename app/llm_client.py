@@ -29,9 +29,9 @@ class LLMClient:
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         model: Optional[str] = None,
-        max_retries: int = 2,
+        max_retries: int = 3,
         initial_retry_delay: float = 1.0,
-        max_retry_delay: float = 5.0,
+        max_retry_delay: float = 10.0,
         timeout: float = None,  # kept for backwards compat, ignored
     ):
         self.api_key = api_key or settings.LLM_API_KEY

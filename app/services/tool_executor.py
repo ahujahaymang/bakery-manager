@@ -519,6 +519,33 @@ class ToolExecutor:
         """Instagram integration is coming soon."""
         return "INSTAGRAM_CONNECT_URL:NOT_CONFIGURED"
 
+    # ── Order template ─────────────────────────────────────────────────────
+
+    async def _tool_set_order_template(self, args):
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            TenantService(reg_db).set_order_template(self.tenant_id, args["template"])
+        finally:
+            reg_db.close()
+        return (
+            "✅ Order template saved! From now on, when you paste a filled-in order "
+            "in this format I'll create it straight away without asking for each field."
+        )
+
+    async def _tool_get_order_template(self, args):
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+        reg_db = next(get_registry_db())
+        try:
+            template = TenantService(reg_db).get_order_template(self.tenant_id)
+        finally:
+            reg_db.close()
+        if not template:
+            return "No order template saved yet."
+        return f"Current order template:\n\n{template}"
+
     # ── Products ───────────────────────────────────────────────────────────
 
     async def _tool_add_product(self, args):
