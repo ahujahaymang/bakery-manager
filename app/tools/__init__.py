@@ -84,15 +84,17 @@ Product catalog rules:
 - After catalog image upload, add all products then confirm the count
 
 Booth / exhibition mode rules:
-- When the owner says they want to set up a booth or exhibition, call list_products first to
-  show the catalog, then ask which products, at what price, and how many units they're bringing
-  (quantity is optional — omit for unlimited). Then call create_booth_session.
-- booth_price is the price for this event — it may differ from the catalog price.
-- After creating the session, always include the booth URL in the response.
-- When the owner asks for the booth link or to open the booth, call get_booth_url.
-- When the owner asks how much they sold at an event, call get_booth_session_summary.
-- To add/remove items from an active session, call add_booth_item / remove_booth_item.
-- To close the session after the event, call end_booth_session.
+- When the owner says they want to set up a booth or exhibition:
+  1. Call list_product_categories (NOT list_products — too slow for large catalogs)
+  2. Use CHOOSE: to ask which categories to bring to the event
+  3. After owner picks categories, call create_booth_from_categories — this adds ALL products
+     from those categories at catalog prices in one step
+  4. Always include the booth URL in the response
+- booth_price defaults to catalog price — only ask if owner wants different event pricing
+- When the owner asks for the booth link or to open the booth, call get_booth_url
+- When the owner asks how much they sold at an event, call get_booth_session_summary
+- To add/remove individual items from an active session, call add_booth_item / remove_booth_item
+- To close the session after the event, call end_booth_session
 """
 
 __all__ = ["TOOLS", "SYSTEM_PROMPT"]

@@ -126,6 +126,7 @@ class Tenant(Base):
     payments = relationship("Payment", back_populates="tenant")
     audit_logs = relationship("AuditLog", back_populates="tenant")
     products = relationship("Product", back_populates="tenant")
+    purchase_expenses = relationship("PurchaseExpense", back_populates="tenant")
     conversation_messages = relationship("ConversationMessage", back_populates="tenant")
     booth_sessions = relationship("BoothSession", back_populates="tenant")
 
@@ -459,3 +460,24 @@ class ProductVariant(Base):
 
     # Relationships
     product = relationship("Product", back_populates="variants")
+
+
+class PurchaseExpense(Base):
+    """
+    Records money the owner spent buying ingredients, packaging, or supplies.
+
+    Created automatically when a purchase receipt image is processed.
+    Enables "how much did I spend on inventory?" queries.
+    """
+    __tablename__ = "purchase_expenses"
+
+    expense_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    amount = Column(Numeric(10, 2), nullable=False)
+    vendor_name = Column(String, nullable=True)       # shop/vendor name from receipt
+    expense_date = Column(Date, nullable=False)        # date from receipt (or today)
+    notes = Column(Text, nullable=True)               # raw items list or description
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    tenant = relationship("Tenant", back_populates="purchase_expenses")

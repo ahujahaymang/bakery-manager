@@ -250,10 +250,20 @@ class TelegramBotListener:
                 registry_db.close()
 
             # Step 2: process with timeout — handler opens its own DB session
+            # Use longer timeout if this is confirming a pending catalog image
+            pending = self.handler._pending_images.get(chat_id)
+            is_catalog_confirm = (
+                isinstance(pending, tuple) and
+                len(pending) >= 2 and
+                pending[1] == "catalog" and
+                text.lower().strip() in ("yes", "y", "ok", "sure", "go ahead", "proceed")
+            )
+            timeout = IMAGE_TIMEOUT if is_catalog_confirm else REQUEST_TIMEOUT
+
             try:
                 response = await asyncio.wait_for(
                     self.handler.handle_text(tenant_id, chat_id, text),
-                    timeout=REQUEST_TIMEOUT,
+                    timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 logger.warning(f"Request timed out for chat_id={chat_id}")

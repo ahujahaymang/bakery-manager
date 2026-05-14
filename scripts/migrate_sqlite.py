@@ -137,6 +137,20 @@ for db in DBS:
     """):
         print("  + table: conversation_messages")
 
+    if create_table_if_missing(conn, "purchase_expenses", """
+        CREATE TABLE purchase_expenses (
+            expense_id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            amount NUMERIC(10,2) NOT NULL,
+            vendor_name TEXT,
+            expense_date DATE NOT NULL,
+            notes TEXT,
+            created_at DATETIME NOT NULL,
+            FOREIGN KEY(tenant_id) REFERENCES tenants(tenant_id)
+        )
+    """):
+        print("  + table: purchase_expenses")
+
     conn.commit()
     conn.close()
 

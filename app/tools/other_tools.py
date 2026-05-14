@@ -20,13 +20,36 @@ class OtherTools:
            "field names and structure before parsing a pasted order.",
            {}),
 
+        # ── Expenses ────────────────────────────────────────────────────────
+
+        fn("record_expense",
+           "Record money the owner spent buying ingredients, packaging, or supplies. "
+           "Call this automatically when processing a purchase receipt image.",
+           {
+               "amount": num_prop("Total amount spent"),
+               "vendor_name": str_prop("Shop or vendor name from receipt"),
+               "expense_date": str_prop("Date from receipt in YYYY-MM-DD format"),
+               "notes": str_prop("Brief description, e.g. 'Blueberry filling, Milkmaid, Butter'"),
+           },
+           required=["amount", "expense_date"]),
+
+        fn("list_expenses",
+           "Show purchase expenses (money spent on ingredients/supplies). "
+           "Use when owner asks 'how much did I spend on inventory' or 'show my expenses'.",
+           {
+               "start_date": str_prop("YYYY-MM-DD"),
+               "end_date": str_prop("YYYY-MM-DD"),
+           }),
+
         # ── Booth ──────────────────────────────────────────────────────────
 
         fn("create_booth_session",
-           "Create a new exhibition booth session with the products the owner wants to sell. "
-           "Call this when the owner says they want to set up a booth or exhibition. "
-           "First call list_products to show the catalog, then create the session with the "
-           "items the owner specifies. Returns the booth URL.",
+           "Create a new exhibition booth session. "
+           "IMPORTANT: Do NOT call list_products first — it returns too many items. "
+           "Instead: (1) call list_product_categories to get category names, "
+           "(2) use CHOOSE: to ask which categories to bring, "
+           "(3) call create_booth_from_categories with the chosen categories. "
+           "Returns the booth URL.",
            {
                "name": str_prop("Event name, e.g. 'Pune Food Fest May 2026'"),
                "items": {
@@ -44,6 +67,24 @@ class OtherTools:
                },
            },
            required=["name", "items"]),
+
+        fn("list_product_categories",
+           "List all product categories in the catalog. Use this for booth setup — "
+           "much faster than list_products for large catalogs.",
+           {}),
+
+        fn("create_booth_from_categories",
+           "Create a booth session with ALL products from the specified categories at their catalog prices. "
+           "Use this after the owner picks categories — no need to list individual products.",
+           {
+               "name": str_prop("Event name"),
+               "categories": {
+                   "type": "array",
+                   "items": {"type": "string"},
+                   "description": "Category names to include, e.g. ['Gourmet Cookies', 'Desserts']"
+               },
+           },
+           required=["name", "categories"]),
 
         fn("add_booth_item",
            "Add a product variant to the currently active booth session.",

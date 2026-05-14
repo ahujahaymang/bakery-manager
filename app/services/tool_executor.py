@@ -548,6 +548,143 @@ class ToolExecutor:
 
     # ── Booth ───────────────────────────────────────────────────────────────
 
+    async def _tool_record_expense(self, args):
+        """Record a purchase expense."""
+        from app.models import PurchaseExpense
+        from datetime import date as date_type
+        import uuid as uuid_mod
+
+        expense_date_str = args.get("expense_date", "")
+        try:
+            expense_date = date_type.fromisoformat(expense_date_str)
+        except (ValueError, TypeError):
+            expense_date = date_type.today()
+
+        expense = PurchaseExpense(
+            expense_id=uuid_mod.uuid4(),
+            tenant_id=self.tenant_id,
+            amount=Decimal(str(args["amount"])),
+            vendor_name=args.get("vendor_name"),
+            expense_date=expense_date,
+            notes=args.get("notes"),
+        )
+        self.db.add(expense)
+        self.db.commit()
+        return (
+            f"✅ Expense recorded: ₹{expense.amount:.2f} on {expense_date}"
+            + (f" from {expense.vendor_name}" if expense.vendor_name else "")
+        )
+
+    async def _tool_list_expenses(self, args):
+        """List purchase expenses with optional date filter."""
+        from app.models import PurchaseExpense
+        from datetime import date as date_type
+        import sqlalchemy as sa
+
+        query = self.db.query(PurchaseExpense).filter(
+            PurchaseExpense.tenant_id == self.tenant_id
+        )
+        start = args.get("start_date")
+        end = args.get("end_date")
+        if start:
+            try:
+                query = query.filter(PurchaseExpense.expense_date >= date_type.fromisoformat(start))
+            except ValueError:
+                pass
+        if end:
+            try:
+                query = query.filter(PurchaseExpense.expense_date <= date_type.fromisoformat(end))
+            except ValueError:
+                pass
+
+        expenses = query.order_by(PurchaseExpense.expense_date.desc()).all()
+        if not expenses:
+            return "No purchase expenses recorded yet."
+
+        total = sum(e.amount for e in expenses)
+        lines = [f"*Purchase Expenses* — Total: ₹{total:.2f}\n"]
+        for e in expenses:
+            line = f"• {e.expense_date} — ₹{e.amount:.2f}"
+            if e.vendor_name:
+                line += f" ({e.vendor_name})"
+            if e.notes:
+                line += f"\n  _{e.notes[:80]}_"
+            lines.append(line)
+        return "\n".join(lines)
+
+    async def _tool_list_product_categories(self, args):
+        """Return distinct product categories — fast alternative to list_products for booth setup."""
+        from app.services.product_service import ProductService
+        svc = ProductService(self.db)
+        products = svc.list_products(self.tenant_id)
+        if not products:
+            return "No products in catalog yet."
+        categories = sorted({p.category for p in products if p.category})
+        if not categories:
+            return "No categories found."
+        # Return as CHOOSE: so the agent can present clickable buttons
+        options = "\n".join(categories)
+        return f"CHOOSE:Which categories are you bringing to the event?\n{options}\nAll categories"
+
+    async def _tool_create_booth_from_categories(self, args):
+        """Create a booth session with all products from the specified categories."""
+        from app.booth.booth_service import BoothService
+        from app.services.product_service import ProductService
+        from app.config import settings
+        from decimal import Decimal
+
+        session_name = args["name"]
+        chosen_categories = [c.strip() for c in args.get("categories", [])]
+
+        prod_svc = ProductService(self.db)
+        all_products = prod_svc.list_products(self.tenant_id)
+
+        # Filter to chosen categories (case-insensitive)
+        # "All categories" means include everything
+        if any(c.lower() in ("all", "all categories") for c in chosen_categories):
+            selected = all_products
+        else:
+            chosen_lower = {c.lower() for c in chosen_categories}
+            selected = [p for p in all_products if p.category and p.category.lower() in chosen_lower]
+
+        if not selected:
+            return f"No products found in categories: {', '.join(chosen_categories)}"
+
+        booth_svc = BoothService(self.db, self.tenant_id)
+        session = booth_svc.start_session(session_name)
+
+        added = 0
+        errors = []
+        for product in selected:
+            for variant in product.variants:
+                try:
+                    booth_svc.add_item(
+                        session_id=session.session_id,
+                        variant_id=variant.variant_id,
+                        booth_price=Decimal(str(variant.price)),
+                        stock_qty=None,  # unlimited by default
+                    )
+                    added += 1
+                except Exception as e:
+                    errors.append(f"{product.name} ({variant.size_label}): {e}")
+
+        booth_url = (
+            f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}"
+            if settings.WEBHOOK_URL
+            else f"http://localhost:8000/booth/{self.tenant_id}"
+        )
+
+        lines = [
+            f"✅ Booth *{session_name}* created with {added} product variant(s) "
+            f"from {len(selected)} products.",
+            f"\n🏪 Open your booth:\n{booth_url}",
+            "\nBookmark it — the link never changes.",
+            "\nAll items are priced at catalog prices. Say 'change price for X' to adjust.",
+        ]
+        if errors:
+            lines.append(f"\n⚠️ Some items skipped: {'; '.join(errors[:3])}")
+        return "\n".join(lines)
+
     async def _tool_create_booth_session(self, args):
         from app.booth.booth_service import BoothService
         from app.config import settings

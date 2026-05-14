@@ -1197,10 +1197,14 @@ class RequestHandler:
                 lines.append(item_str)
 
         if subtype == "receipt_purchase":
+            notes = ", ".join(
+                item.get("name", "") for item in items[:5] if item.get("name")
+            )
             lines.append(
                 "\nThis is an ingredient/supply purchase receipt. The owner has already confirmed. "
-                "Update the inventory for each item using update_inventory (if item exists) or "
-                "add_inventory (if new). Use the quantity and cost_per_unit from the receipt. "
+                "Do these TWO things in parallel:\n"
+                "1. Call record_expense with the total amount, vendor name, date, and a brief notes summary\n"
+                "2. For each item: use update_inventory if it exists, or add_inventory if new\n"
                 "Do NOT ask whether this is a customer payment — proceed directly."
             )
         elif subtype == "receipt_customer":
