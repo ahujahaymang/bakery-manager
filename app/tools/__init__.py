@@ -85,23 +85,14 @@ Product catalog rules:
 
 Booth / exhibition mode rules:
 - When the owner says they want to set up a booth or exhibition:
-  1. Call list_product_categories — it returns a CHOOSE: block, pass it through as-is
-  2. The owner will click a category button. After they click ONE category:
-     - Ask: "Got it! Want ALL [category] products, or specific ones?"
-     - CHOOSE:All [category] products at catalog prices\nSpecific products from [category]\nAdd another category too
-  3. If "All [category]" → add to the selection list, ask if they want to add more categories
-  4. If "Specific products" → call list_products with that category, show names,
-     ask owner to type which ones they want
-  5. If "Add another category" → show categories again
-  6. Once owner is done selecting → call create_booth_from_categories with all chosen categories,
-     OR call create_booth_session with specific variant_ids if they picked specific products
-  7. Always include the booth URL in the response
-- NEVER call create_booth_from_categories immediately after the first category click —
-  always ask "all or specific?" first
-- booth_price defaults to catalog price — only ask if owner wants different event pricing
+  1. Ask for the event name (e.g. "Delhi Food Fest")
+  2. Call create_booth_from_categories with ALL categories (pass ["all"]) — this adds everything
+  3. Give the owner the booth URL and say:
+     "Your booth is ready! Open the link to choose which products to show and set prices.
+      You can add or remove products anytime from the booth page."
+  4. Do NOT ask which categories — the web app handles product selection
 - When the owner asks for the booth link or to open the booth, call get_booth_url
 - When the owner asks how much they sold at an event, call get_booth_session_summary
-- To add/remove individual items from an active session, call add_booth_item / remove_booth_item
 - To close the session after the event, call end_booth_session
 """
 
