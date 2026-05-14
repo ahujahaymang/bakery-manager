@@ -189,11 +189,14 @@ class RequestHandler:
         # Pending image confirmation — owner replied to the classification question
         if chat_id in self._pending_images:
             pending = self._pending_images[chat_id]
-            # pending is (image_bytes, extraction_type) or just image_bytes (legacy)
-            if isinstance(pending, tuple):
+            # pending is (image_bytes, extraction_type, subtype) or legacy (image_bytes, type)
+            if isinstance(pending, tuple) and len(pending) == 3:
+                image_bytes, extraction_type, image_subtype = pending
+            elif isinstance(pending, tuple) and len(pending) == 2:
                 image_bytes, extraction_type = pending
+                image_subtype = extraction_type
             else:
-                image_bytes, extraction_type = pending, None
+                image_bytes, extraction_type, image_subtype = pending, None, ""
 
             text_lower = text.lower().strip()
 
@@ -202,7 +205,8 @@ class RequestHandler:
                 if extraction_type:
                     del self._pending_images[chat_id]
                     return await self._process_confirmed_image(
-                        tenant_id, chat_id, image_bytes, extraction_type
+                        tenant_id, chat_id, image_bytes, extraction_type,
+                        image_subtype=image_subtype,
                     )
 
             # Owner gave a type keyword — use that instead
@@ -210,12 +214,11 @@ class RequestHandler:
             if detected:
                 del self._pending_images[chat_id]
                 return await self._process_confirmed_image(
-                    tenant_id, chat_id, image_bytes, detected
+                    tenant_id, chat_id, image_bytes, detected,
+                    image_subtype=detected,
                 )
 
-            # Owner said something else — treat as a new text message
-            # but keep the pending image in case they come back to it
-            # (fall through to normal text handling)
+            # Owner said something else — fall through to normal text handling
 
         # Step 1: brand new user — no history, no business name set yet
         if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
@@ -513,8 +516,8 @@ class RequestHandler:
             return question
 
         # Step 2: confirm with owner before processing
-        # Store image + classified type so the next message can trigger processing
-        self._pending_images[chat_id] = (image_bytes, extraction_type)
+        # Store image + classified type + subtype for use after confirmation
+        self._pending_images[chat_id] = (image_bytes, extraction_type, image_type)
 
         # Build a confirmation message based on what was found
         if image_type == "receipt_purchase":
@@ -562,10 +565,15 @@ class RequestHandler:
         chat_id: str,
         image_bytes: bytes,
         extraction_type: str,
+        image_subtype: str = "",
     ) -> str:
         """
         Extract data from a confirmed image and run the agent.
         Called after the owner confirms what the image is.
+
+        image_subtype carries the original classification (e.g. 'receipt_purchase',
+        'receipt_customer') so the summariser can give the right instruction
+        without asking the owner again.
         """
         result = await self._extract_image_data(extraction_type, image_bytes)
         if "error" in result:
@@ -576,8 +584,8 @@ class RequestHandler:
                 context=f"[{extraction_type} image]",
             )
 
-        summary = self._summarise_image_result(extraction_type, result)
-        logger.info(f"Image summary ({extraction_type}): {summary[:200]}")
+        summary = self._summarise_image_result(extraction_type, result, subtype=image_subtype)
+        logger.info(f"Image summary ({extraction_type}/{image_subtype}): {summary[:200]}")
 
         with _open_db(tenant_id) as db:
             executor = ToolExecutor(db, tenant_id)
@@ -1113,13 +1121,14 @@ class RequestHandler:
         }
         return await extractors[image_type](image_bytes)
 
-    def _summarise_image_result(self, image_type: str, result: dict) -> str:
+    def _summarise_image_result(self, image_type: str, result: dict, subtype: str = "") -> str:
         """
         Convert extracted image data into a natural language instruction
         that the agent can act on directly.
+        subtype carries the original classification (e.g. receipt_purchase).
         """
         summarisers = {
-            "receipt": self._summarise_receipt,
+            "receipt": lambda r: self._summarise_receipt(r, subtype=subtype),
             "recipe":  self._summarise_recipe,
             "order":   self._summarise_order,
             "catalog": self._summarise_catalog,
@@ -1143,8 +1152,12 @@ class RequestHandler:
         )
         return "\n".join(lines)
 
-    def _summarise_receipt(self, result: dict) -> str:
-        """Build agent instruction from extracted receipt data."""
+    def _summarise_receipt(self, result: dict, subtype: str = "") -> str:
+        """Build agent instruction from extracted receipt data.
+        subtype: 'receipt_purchase' → update inventory directly
+                 'receipt_customer' → record payment directly
+                 '' / unknown       → ask owner
+        """
         lines = ["I scanned a receipt."]
         if result.get("amount"):
             lines.append(f"Total amount: ₹{result['amount']}")
@@ -1164,12 +1177,27 @@ class RequestHandler:
                 if item.get("price"):
                     item_str += f" @ ₹{item['price']}"
                 lines.append(item_str)
-        lines.append(
-            "\nFirst ask the owner: Is this (1) a payment received FROM a customer for an order, "
-            "or (2) a purchase receipt for ingredients/supplies you BOUGHT?\n"
-            "- If (1): use record_payment to record the customer payment\n"
-            "- If (2): use update_inventory to update quantities and costs for each ingredient purchased"
-        )
+
+        if subtype == "receipt_purchase":
+            lines.append(
+                "\nThis is an ingredient/supply purchase receipt. The owner has already confirmed. "
+                "Update the inventory for each item using update_inventory (if item exists) or "
+                "add_inventory (if new). Use the quantity and cost_per_unit from the receipt. "
+                "Do NOT ask whether this is a customer payment — proceed directly."
+            )
+        elif subtype == "receipt_customer":
+            lines.append(
+                "\nThis is a customer payment receipt. The owner has already confirmed. "
+                "Use record_payment to record it. Ask for the customer name or order if not clear. "
+                "Do NOT ask whether this is a purchase receipt — proceed directly."
+            )
+        else:
+            lines.append(
+                "\nAsk the owner: Is this (1) a payment received FROM a customer for an order, "
+                "or (2) a purchase receipt for ingredients/supplies you BOUGHT?\n"
+                "- If (1): use record_payment\n"
+                "- If (2): use update_inventory or add_inventory for each item"
+            )
         return "\n".join(lines)
 
     def _summarise_order(self, result: dict) -> str:
