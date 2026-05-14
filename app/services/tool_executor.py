@@ -623,8 +623,14 @@ class ToolExecutor:
         if not categories:
             return "No categories found."
         # Return as CHOOSE: so the agent can present clickable buttons
+        # Include "All categories" and "Done / Create booth" options
         options = "\n".join(categories)
-        return f"CHOOSE:Which categories are you bringing to the event?\n{options}\nAll categories"
+        return (
+            f"CHOOSE:Which categories are you bringing to the event?\n"
+            f"{options}\n"
+            f"All categories\n"
+            f"Done — create booth with selected"
+        )
 
     async def _tool_create_booth_from_categories(self, args):
         """Create a booth session with all products from the specified categories."""

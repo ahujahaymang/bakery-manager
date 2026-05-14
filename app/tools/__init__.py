@@ -85,14 +85,19 @@ Product catalog rules:
 
 Booth / exhibition mode rules:
 - When the owner says they want to set up a booth or exhibition:
-  1. Call list_product_categories (NOT list_products — too slow for large catalogs)
-  2. The result contains a CHOOSE: block — pass it through as-is, do NOT reformat it
-  3. After owner picks categories (e.g. "Desserts" or "Desserts and Baked Savouries"):
-     a. Ask: "Bring ALL products from these categories, or specific ones?"
-     b. If ALL → call create_booth_from_categories immediately
-     c. If specific → call list_products with that category filter, show the list,
-        ask which ones, then call create_booth_session with those variant_ids
-  4. Always include the booth URL in the response
+  1. Call list_product_categories — it returns a CHOOSE: block, pass it through as-is
+  2. The owner will click a category button. After they click ONE category:
+     - Ask: "Got it! Want ALL [category] products, or specific ones?"
+     - CHOOSE:All [category] products at catalog prices\nSpecific products from [category]\nAdd another category too
+  3. If "All [category]" → add to the selection list, ask if they want to add more categories
+  4. If "Specific products" → call list_products with that category, show names,
+     ask owner to type which ones they want
+  5. If "Add another category" → show categories again
+  6. Once owner is done selecting → call create_booth_from_categories with all chosen categories,
+     OR call create_booth_session with specific variant_ids if they picked specific products
+  7. Always include the booth URL in the response
+- NEVER call create_booth_from_categories immediately after the first category click —
+  always ask "all or specific?" first
 - booth_price defaults to catalog price — only ask if owner wants different event pricing
 - When the owner asks for the booth link or to open the booth, call get_booth_url
 - When the owner asks how much they sold at an event, call get_booth_session_summary
