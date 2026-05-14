@@ -46,18 +46,22 @@ class ImageService:
 
     EXTRACTION_PROMPTS = {
         ImageType.RECEIPT: ExtractionPrompt(
-            description="payment information from this receipt",
+            description="receipt information",
             fields=[
-                "Amount (number only, no currency symbols)",
-                "Payment method (must be one of: Cash, Paytm, Bank Transfer, or Unknown)",
+                "Total amount (number only, no currency symbols)",
+                "Payment method (must be one of: Cash, Paytm, Bank Transfer, Card, UPI, or Unknown)",
                 "Date (in YYYY-MM-DD format if found)",
-                "Customer name (if mentioned)"
+                "Name on receipt (customer name or shop/vendor name)",
+                "Line items if visible (item name, quantity, unit, price)"
             ],
             json_schema="""{
     "amount": <number or null>,
-    "method": "<Cash|Paytm|Bank Transfer|Unknown>",
+    "method": "<Cash|Paytm|Bank Transfer|Card|UPI|Unknown>",
     "date": "<YYYY-MM-DD or null>",
     "customer_name": "<name or null>",
+    "items": [
+        {"name": "<item name>", "quantity": <number or null>, "unit": "<unit or null>", "price": <number or null>}
+    ],
     "confidence": <0.0 to 1.0>,
     "raw_text": "<all text you can read from the image>"
 }"""
@@ -107,7 +111,7 @@ class ImageService:
     DEFAULT_RESULTS = {
         ImageType.RECEIPT: {
             'amount': None, 'method': None, 'date': None,
-            'customer_name': None, 'confidence': 0.0, 'raw_text': ''
+            'customer_name': None, 'items': [], 'confidence': 0.0, 'raw_text': ''
         },
         ImageType.RECIPE: {
             'name': None, 'yield_per_batch': None,

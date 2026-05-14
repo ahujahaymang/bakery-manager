@@ -479,7 +479,7 @@ class RequestHandler:
                 "📸 Got your image! What type is it?\n\n"
                 "Please reply with one of:\n"
                 "• *recipe* — handwritten or printed recipe\n"
-                "• *receipt* — payment receipt or bill\n"
+                "• *receipt* — any receipt (customer payment OR ingredient purchase)\n"
                 "• *order* — WhatsApp/SMS order screenshot\n"
                 "• *catalog* — product menu or price list"
             )
@@ -1070,16 +1070,31 @@ class RequestHandler:
 
     def _summarise_receipt(self, result: dict) -> str:
         """Build agent instruction from extracted receipt data."""
-        lines = ["I scanned a payment receipt."]
+        lines = ["I scanned a receipt."]
         if result.get("amount"):
-            lines.append(f"Amount: ₹{result['amount']}")
+            lines.append(f"Total amount: ₹{result['amount']}")
         if result.get("method"):
-            lines.append(f"Method: {result['method']}")
+            lines.append(f"Payment method: {result['method']}")
         if result.get("customer_name"):
-            lines.append(f"Customer: {result['customer_name']}")
+            lines.append(f"Name on receipt: {result['customer_name']}")
         if result.get("date"):
             lines.append(f"Date: {result['date']}")
-        lines.append("Please help me record this payment. Ask for any missing details.")
+        items = result.get("items", [])
+        if items:
+            lines.append("Items on receipt:")
+            for item in items:
+                item_str = f"  - {item.get('name', 'Unknown')}"
+                if item.get("quantity"):
+                    item_str += f": {item['quantity']} {item.get('unit', '')}"
+                if item.get("price"):
+                    item_str += f" @ ₹{item['price']}"
+                lines.append(item_str)
+        lines.append(
+            "\nFirst ask the owner: Is this (1) a payment received FROM a customer for an order, "
+            "or (2) a purchase receipt for ingredients/supplies you BOUGHT?\n"
+            "- If (1): use record_payment to record the customer payment\n"
+            "- If (2): use update_inventory to update quantities and costs for each ingredient purchased"
+        )
         return "\n".join(lines)
 
     def _summarise_order(self, result: dict) -> str:
