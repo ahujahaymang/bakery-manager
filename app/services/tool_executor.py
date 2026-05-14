@@ -546,6 +546,165 @@ class ToolExecutor:
             return "No order template saved yet."
         return f"Current order template:\n\n{template}"
 
+    # ── Booth ───────────────────────────────────────────────────────────────
+
+    async def _tool_create_booth_session(self, args):
+        from app.booth.booth_service import BoothService
+        from app.config import settings
+        from decimal import Decimal
+        from uuid import UUID
+
+        svc = BoothService(self.db, self.tenant_id)
+        session = svc.start_session(args["name"])
+
+        # Add items
+        added = []
+        errors = []
+        for item in args.get("items", []):
+            try:
+                stock = item.get("stock_qty")
+                svc.add_item(
+                    session_id=session.session_id,
+                    variant_id=UUID(item["variant_id"]),
+                    booth_price=Decimal(str(item["booth_price"])),
+                    stock_qty=int(stock) if stock is not None else None,
+                )
+                added.append(item["variant_id"])
+            except Exception as e:
+                errors.append(str(e))
+
+        booth_url = f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}" if settings.WEBHOOK_URL else \
+                    f"http://localhost:8000/booth/{self.tenant_id}"
+
+        lines = [
+            f"✅ Booth session '{session.name}' created with {len(added)} product(s).",
+            f"\n🏪 Open your booth on any device:\n{booth_url}",
+            "\nBookmark it — the link never changes.",
+        ]
+        if errors:
+            lines.append(f"\n⚠️ Some items could not be added: {'; '.join(errors)}")
+        return "\n".join(lines)
+
+    async def _tool_add_booth_item(self, args):
+        from app.booth.booth_service import BoothService
+        from decimal import Decimal
+        from uuid import UUID
+
+        svc = BoothService(self.db, self.tenant_id)
+        session = svc.get_active_session()
+        if not session:
+            return "No active booth session. Start one first."
+
+        stock = args.get("stock_qty")
+        item = svc.add_item(
+            session_id=session.session_id,
+            variant_id=UUID(args["variant_id"]),
+            booth_price=Decimal(str(args["booth_price"])),
+            stock_qty=int(stock) if stock is not None else None,
+        )
+        stock_str = f"{stock} units" if stock is not None else "unlimited"
+        return (
+            f"✅ Added {item.variant_id} to booth at ₹{item.booth_price} ({stock_str}).\n"
+            "It's live on the sell screen now."
+        )
+
+    async def _tool_remove_booth_item(self, args):
+        from app.booth.booth_service import BoothService
+        from uuid import UUID
+
+        svc = BoothService(self.db, self.tenant_id)
+        session = svc.get_active_session()
+        if not session:
+            return "No active booth session."
+
+        svc.remove_item(session.session_id, UUID(args["variant_id"]))
+        return "✅ Item removed from booth."
+
+    async def _tool_end_booth_session(self, args):
+        from app.booth.booth_service import BoothService
+
+        svc = BoothService(self.db, self.tenant_id)
+        session = svc.get_active_session()
+        if not session:
+            return "No active booth session to end."
+
+        closed = svc.end_session(session.session_id)
+        summary = svc.get_session_summary(closed.session_id)
+
+        duration = f"{summary.duration_minutes} min" if summary.duration_minutes else ""
+        lines = [
+            f"✅ '{summary.name}' session closed. {duration}",
+            f"Sales: {summary.total_orders} · Revenue: ₹{summary.total_revenue:.0f} · "
+            f"Items sold: {summary.items_sold}",
+        ]
+        if summary.top_products:
+            lines.append("\nTop sellers:")
+            for p in summary.top_products[:3]:
+                lines.append(f"  • {p.product_name} — {p.units_sold} units · ₹{p.revenue:.0f}")
+        return "\n".join(lines)
+
+    async def _tool_get_booth_url(self, args):
+        from app.config import settings
+        if settings.WEBHOOK_URL:
+            url = f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}"
+        else:
+            url = f"http://localhost:8000/booth/{self.tenant_id}"
+
+        from app.booth.booth_service import BoothService
+        svc = BoothService(self.db, self.tenant_id)
+        session = svc.get_active_session()
+        if session:
+            return f"🏪 Your booth is live ({session.name}):\n{url}"
+        return f"🏪 Your booth URL:\n{url}\n\nNo active session — say 'set up booth' to create one."
+
+    async def _tool_list_booth_sessions(self, args):
+        from app.booth.booth_service import BoothService
+
+        svc = BoothService(self.db, self.tenant_id)
+        sessions = svc.list_sessions()
+        if not sessions:
+            return "No booth sessions yet."
+
+        lines = []
+        for s in sessions:
+            status = "🟢 Active" if s.ended_at is None else "✅ Closed"
+            summary = svc.get_session_summary(s.session_id)
+            lines.append(
+                f"{status} *{s.name}* — {s.started_at.strftime('%d %b %Y')} · "
+                f"₹{summary.total_revenue:.0f} · {summary.total_orders} sales"
+            )
+        return "\n".join(lines)
+
+    async def _tool_get_booth_session_summary(self, args):
+        from app.booth.booth_service import BoothService
+
+        svc = BoothService(self.db, self.tenant_id)
+        search = args.get("session_name", "").lower().strip()
+        sessions = svc.list_sessions()
+
+        # Find best match by name
+        match = next(
+            (s for s in sessions if search in s.name.lower()),
+            None
+        )
+        if not match:
+            names = ", ".join(f"'{s.name}'" for s in sessions[:5])
+            return f"No session found matching '{search}'. Available: {names}"
+
+        summary = svc.get_session_summary(match.session_id)
+        duration = f"{summary.duration_minutes} min" if summary.duration_minutes else "ongoing"
+        lines = [
+            f"*{summary.name}*",
+            f"Date: {summary.started_at.strftime('%d %b %Y')} · Duration: {duration}",
+            f"Sales: {summary.total_orders} · Revenue: ₹{summary.total_revenue:.0f} · "
+            f"Items sold: {summary.items_sold}",
+        ]
+        if summary.top_products:
+            lines.append("\nTop sellers:")
+            for p in summary.top_products:
+                lines.append(f"  • {p.product_name} — {p.units_sold} units · ₹{p.revenue:.0f}")
+        return "\n".join(lines)
+
     # ── Products ───────────────────────────────────────────────────────────
 
     async def _tool_add_product(self, args):

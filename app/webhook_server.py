@@ -80,3 +80,15 @@ def register_instagram(instagram_listener):
     router = create_instagram_router(instagram_listener)
     app.include_router(router)
     logger.info("Instagram webhook routes registered at /instagram/webhook")
+
+
+def register_booth():
+    """
+    Register booth and Razorpay webhook routes.
+    Called once at startup from telegram_listener.
+    """
+    from app.booth.router import router as booth_router
+    from app.booth.razorpay_router import router as razorpay_router
+    app.include_router(booth_router)
+    app.include_router(razorpay_router)
+    logger.info("Booth routes registered at /booth/{tenant_id}")

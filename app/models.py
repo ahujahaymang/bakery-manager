@@ -107,6 +107,10 @@ class Tenant(Base):
     # Used by the agent to parse pasted order forms without asking for each field
     order_template = Column(Text, nullable=True)
 
+    # Razorpay integration — per-tenant API keys (owner's own Razorpay account)
+    razorpay_key_id     = Column(String, nullable=True)   # public key
+    razorpay_key_secret = Column(String, nullable=True)   # secret key (encrypt at rest in Phase 2)
+
     # Primary messaging platform: "telegram" | "whatsapp"
     # Instagram order notifications are sent via this platform
     messaging_platform = Column(String, nullable=False, default="telegram")
@@ -123,6 +127,7 @@ class Tenant(Base):
     audit_logs = relationship("AuditLog", back_populates="tenant")
     products = relationship("Product", back_populates="tenant")
     conversation_messages = relationship("ConversationMessage", back_populates="tenant")
+    booth_sessions = relationship("BoothSession", back_populates="tenant")
 
 
 class Customer(Base):
@@ -232,6 +237,8 @@ class Order(Base):
     delivery_date = Column(Date, nullable=False)
     delivery_address = Column(String, nullable=True)  # specific address for this order
     status = Column(String, nullable=False, default="pending")  # "pending", "delivered", "cancelled"
+    # NULL for regular chat orders; set for booth orders to link to the event session
+    booth_session_id = Column(PortableUUID(), ForeignKey("booth_sessions.session_id"), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
@@ -240,6 +247,7 @@ class Order(Base):
     customer = relationship("Customer", back_populates="orders")
     order_items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")
     payments = relationship("Payment", back_populates="order", cascade="all, delete-orphan")
+    booth_session = relationship("BoothSession", back_populates="orders")
 
 
 class OrderItem(Base):
@@ -280,7 +288,11 @@ class Payment(Base):
     tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     order_id = Column(PortableUUID(), ForeignKey("orders.order_id"), nullable=False, index=True)
     amount = Column(Numeric(10, 2), nullable=False)
-    method = Column(String, nullable=False)  # "Cash", "Paytm", "Bank Transfer"
+    method = Column(String, nullable=False)  # "Cash", "UPI", "Razorpay", "Paytm", "Bank Transfer"
+    # Razorpay payment ID for reconciliation — set only for Razorpay payments
+    razorpay_payment_id = Column(String, nullable=True, index=True)
+    # Payment status: "completed" for cash/UPI, "pending"→"completed" for Razorpay
+    status = Column(String, nullable=False, default="completed")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
@@ -331,6 +343,55 @@ class ConversationMessage(Base):
 
     # Relationships
     tenant = relationship("Tenant", back_populates="conversation_messages")
+
+
+class BoothSession(Base):
+    """
+    A named exhibition/event session during which the owner sells products
+    at a booth. Groups all booth sales so they can be reported on later.
+
+    One active session per tenant at a time (enforced in BoothService).
+    ended_at=NULL means the session is still active.
+    """
+    __tablename__ = "booth_sessions"
+
+    session_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id  = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    name       = Column(String, nullable=False)          # e.g. "Pune Food Fest May 2026"
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ended_at   = Column(DateTime, nullable=True)         # NULL = still active
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    tenant = relationship("Tenant", back_populates="booth_sessions")
+    items  = relationship("BoothSessionItem", back_populates="session",
+                          cascade="all, delete-orphan")
+    orders = relationship("Order", back_populates="booth_session")
+
+
+class BoothSessionItem(Base):
+    """
+    A product variant available for sale in a booth session.
+
+    booth_price may differ from the catalog price (event pricing).
+    stock_qty=NULL means unlimited stock.
+    sold_qty is incremented atomically on each checkout.
+    """
+    __tablename__ = "booth_session_items"
+
+    item_id     = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    session_id  = Column(PortableUUID(), ForeignKey("booth_sessions.session_id"),
+                         nullable=False, index=True)
+    variant_id  = Column(PortableUUID(), ForeignKey("product_variants.variant_id"),
+                         nullable=False)
+    booth_price = Column(Numeric(10, 2), nullable=False)
+    stock_qty   = Column(Integer, nullable=True)           # NULL = unlimited
+    sold_qty    = Column(Integer, nullable=False, default=0)
+    created_at  = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    # Relationships
+    session = relationship("BoothSession", back_populates="items")
+    variant = relationship("ProductVariant")
 
 
 class Product(Base):

@@ -57,8 +57,9 @@ class TelegramBotListener:
 
     def _start_webhook_server(self):
         """Start the FastAPI webhook server in a background thread."""
-        from app.webhook_server import app as webhook_app, register_instagram
+        from app.webhook_server import app as webhook_app, register_instagram, register_booth
         register_instagram(self.instagram)
+        register_booth()
 
         import uvicorn
 
