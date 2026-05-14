@@ -192,7 +192,49 @@ Include ALL text visible in the image in the raw_text field."""
             result['error'] = str(e)
             return result
 
-    async def process_receipt_image(self, image_bytes: bytes) -> Dict[str, Any]:
+    async def classify_image(self, image_bytes: bytes, caption: str = "") -> dict:
+        """
+        Use GPT-4o to look at the image and determine what it is.
+
+        Returns a dict with:
+          - type: "recipe" | "receipt_customer" | "receipt_purchase" |
+                  "order" | "catalog" | "unknown"
+          - confidence: 0.0–1.0
+          - summary: one-sentence description of what was found
+          - hint: suggested question to ask the owner for confirmation
+        """
+        image_b64 = self._encode_image(image_bytes)
+        caption_hint = f'The owner captioned it: "{caption}"' if caption else "No caption provided."
+
+        prompt = f"""Look at this image carefully. {caption_hint}
+
+Classify it into exactly one of these types:
+- recipe: A handwritten or printed recipe with ingredients and quantities
+- receipt_customer: A payment receipt showing money received FROM a customer (for an order/sale)
+- receipt_purchase: A purchase receipt/bill showing money SPENT by the owner (buying ingredients, supplies, packaging)
+- order: A WhatsApp/SMS/chat screenshot showing a customer placing an order
+- catalog: A product menu or price list showing items for sale with prices
+- unknown: Cannot determine
+
+Return ONLY this JSON:
+{{
+  "type": "<one of the types above>",
+  "confidence": <0.0 to 1.0>,
+  "summary": "<one sentence: what you see in the image>",
+  "hint": "<short question to confirm with owner, e.g. 'This looks like an ingredient purchase receipt for ₹2364. Should I update your inventory?'>"
+}}"""
+
+        try:
+            result = await self.llm_service.extract_structured_data_from_image(prompt, image_b64)
+            return result
+        except Exception as e:
+            logger.error(f"Image classification failed: {e}")
+            return {
+                "type": "unknown",
+                "confidence": 0.0,
+                "summary": "Could not analyse the image",
+                "hint": "What type of image is this? (recipe / receipt / order / catalog)"
+            }
         """Process a receipt/payment image and extract payment details."""
         return await self._process_image(image_bytes, ImageType.RECEIPT)
 

@@ -186,19 +186,36 @@ class RequestHandler:
         if text.lower().startswith("/request"):
             return await self._handle_request_command(chat_id, text, tenant_id)
 
-        # Pending image clarification — user replied with image type
+        # Pending image confirmation — owner replied to the classification question
         if chat_id in self._pending_images:
-            image_type = self._detect_image_type(text)
-            if image_type:
-                image_bytes = self._pending_images.pop(chat_id)
-                return await self.handle_image(tenant_id, chat_id, image_bytes, text)
+            pending = self._pending_images[chat_id]
+            # pending is (image_bytes, extraction_type) or just image_bytes (legacy)
+            if isinstance(pending, tuple):
+                image_bytes, extraction_type = pending
             else:
-                return (
-                    "Please reply with one of:\n"
-                    "• *recipe* — handwritten or printed recipe\n"
-                    "• *receipt* — payment receipt or bill\n"
-                    "• *order* — WhatsApp/SMS order screenshot"
+                image_bytes, extraction_type = pending, None
+
+            text_lower = text.lower().strip()
+
+            # Owner confirmed — process the image
+            if text_lower in ("yes", "y", "ok", "sure", "go ahead", "proceed", "yes please"):
+                if extraction_type:
+                    del self._pending_images[chat_id]
+                    return await self._process_confirmed_image(
+                        tenant_id, chat_id, image_bytes, extraction_type
+                    )
+
+            # Owner gave a type keyword — use that instead
+            detected = self._detect_image_type(text)
+            if detected:
+                del self._pending_images[chat_id]
+                return await self._process_confirmed_image(
+                    tenant_id, chat_id, image_bytes, detected
                 )
+
+            # Owner said something else — treat as a new text message
+            # but keep the pending image in case they come back to it
+            # (fall through to normal text handling)
 
         # Step 1: brand new user — no history, no business name set yet
         if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
@@ -455,68 +472,124 @@ class RequestHandler:
         caption: str,
     ) -> str:
         """
-        Process an image message and return the agent's response.
+        Process an image message.
 
-        If the caption clearly identifies the image type (recipe/receipt/order),
-        process it immediately. If the caption is missing or unrecognised, store
-        the image and ask the user to clarify — never fail silently.
+        Flow:
+        1. GPT-4o classifies the image (looks at pixels + caption)
+        2. Bot tells the owner what it found and asks for confirmation
+        3. Owner confirms → extract full data → run agent
 
-        Args:
-            tenant_id: Tenant UUID
-            chat_id: Unique conversation identifier
-            image_bytes: Raw image bytes
-            caption: User-provided caption (may be empty or unrecognised)
-
-        Returns:
-            Response string to deliver to the user (never None)
+        The caption is a hint, not the authority — the model decides.
         """
-        image_type = self._detect_image_type(caption)
+        # Step 1: classify the image using GPT-4o vision
+        classification = await self.image_service.classify_image(image_bytes, caption)
+        image_type = classification.get("type", "unknown")
+        confidence = classification.get("confidence", 0.0)
+        summary_text = classification.get("summary", "")
+        hint = classification.get("hint", "")
 
-        if image_type is None:
-            # Store image bytes so we can process them once the user clarifies
-            self._pending_images[chat_id] = image_bytes
-            return (
-                "📸 Got your image! What type is it?\n\n"
-                "Please reply with one of:\n"
+        logger.info(f"Image classified as '{image_type}' (confidence={confidence:.2f}): {summary_text}")
+
+        # Map receipt subtypes to the extraction type
+        extraction_type = {
+            "recipe":           "recipe",
+            "receipt_customer": "receipt",
+            "receipt_purchase": "receipt",
+            "order":            "order",
+            "catalog":          "catalog",
+        }.get(image_type)
+
+        if extraction_type is None or confidence < 0.4:
+            # Can't determine — store image and ask owner
+            self._pending_images[chat_id] = (image_bytes, None)
+            question = hint or (
+                "📸 I couldn't determine what this image is.\n\n"
+                "Please tell me:\n"
                 "• *recipe* — handwritten or printed recipe\n"
-                "• *receipt* — any receipt (customer payment OR ingredient purchase)\n"
+                "• *receipt* — any receipt (customer payment or ingredient purchase)\n"
                 "• *order* — WhatsApp/SMS order screenshot\n"
                 "• *catalog* — product menu or price list"
             )
+            return question
 
-        # Clear any pending image for this chat (user sent a new one with a caption)
-        self._pending_images.pop(chat_id, None)
+        # Step 2: confirm with owner before processing
+        # Store image + classified type so the next message can trigger processing
+        self._pending_images[chat_id] = (image_bytes, extraction_type)
 
-        result = await self._extract_image_data(image_type, image_bytes)
+        # Build a confirmation message based on what was found
+        if image_type == "receipt_purchase":
+            confirm_msg = (
+                f"📄 {summary_text}\n\n"
+                f"{hint or 'Should I update your inventory with these items?'}\n\n"
+                "Reply *yes* to update inventory, or tell me what you'd like to do."
+            )
+        elif image_type == "receipt_customer":
+            confirm_msg = (
+                f"💳 {summary_text}\n\n"
+                f"{hint or 'Should I record this as a customer payment?'}\n\n"
+                "Reply *yes* to record the payment, or tell me what you'd like to do."
+            )
+        elif image_type == "recipe":
+            confirm_msg = (
+                f"📖 {summary_text}\n\n"
+                f"{hint or 'Should I save this as a recipe?'}\n\n"
+                "Reply *yes* to save it, or tell me what you'd like to do."
+            )
+        elif image_type == "order":
+            confirm_msg = (
+                f"🛒 {summary_text}\n\n"
+                f"{hint or 'Should I create this as an order?'}\n\n"
+                "Reply *yes* to create the order, or tell me what you'd like to do."
+            )
+        elif image_type == "catalog":
+            confirm_msg = (
+                f"📋 {summary_text}\n\n"
+                f"{hint or 'Should I import all products into your catalog?'}\n\n"
+                "Reply *yes* to import, or tell me what you'd like to do."
+            )
+        else:
+            confirm_msg = f"📸 {summary_text}\n\n{hint}"
+
+        return confirm_msg
+
+    async def close(self) -> None:
+        """Shut down the agent and LLM client."""
+        await self.agent.close()
+
+    async def _process_confirmed_image(
+        self,
+        tenant_id: UUID,
+        chat_id: str,
+        image_bytes: bytes,
+        extraction_type: str,
+    ) -> str:
+        """
+        Extract data from a confirmed image and run the agent.
+        Called after the owner confirms what the image is.
+        """
+        result = await self._extract_image_data(extraction_type, image_bytes)
         if "error" in result:
             from app.error_handler import ErrorHandler
             return await ErrorHandler.handle(
                 Exception(result["error"]),
                 chat_id=chat_id,
-                context=f"[{image_type} image]",
+                context=f"[{extraction_type} image]",
             )
 
-        summary = self._summarise_image_result(image_type, result)
-        logger.info(f"Image summary ({image_type}): {summary[:200]}")
+        summary = self._summarise_image_result(extraction_type, result)
+        logger.info(f"Image summary ({extraction_type}): {summary[:200]}")
 
-        # All image types use the same Plan → Execute → Summarise flow.
-        # Data is already extracted above (one GPT-vision call).
-        # The agent plans all tool calls in one LLM call, executes them
-        # in parallel, then summarises in one final LLM call.
         with _open_db(tenant_id) as db:
             executor = ToolExecutor(db, tenant_id)
             response = await self.agent.run(
                 user_message=summary,
-                history=self._load_history(db, tenant_id, chat_id),
+                history=self._get_history(chat_id),
                 tool_executor=executor.execute,
             )
-            self._persist(db, tenant_id, chat_id, "user", f"[Image: {image_type}]")
-            self._persist(db, tenant_id, chat_id, "assistant", response)
-        return response
 
-    async def close(self) -> None:
-        """Shut down the agent and LLM client."""
-        await self.agent.close()
+        self._append(chat_id, "user", f"[Image: {extraction_type}]")
+        self._append(chat_id, "assistant", response)
+        return response
 
     # ── Admin ──────────────────────────────────────────────────────────────
 
@@ -1008,9 +1081,11 @@ class RequestHandler:
 
     # ── Image processing ───────────────────────────────────────────────────
 
-    # Keywords that identify each image type from the caption
+    # Keywords used as fallback when owner types a type keyword in response
+    # to the classification confirmation. Not used for initial routing.
     _IMAGE_TYPE_KEYWORDS: Dict[str, List[str]] = {
-        "receipt": ["receipt", "payment", "paid", "bill"],
+        "receipt": ["receipt", "recipt", "receit", "payment", "paid", "bill",
+                    "purchase", "bought", "invoice", "expense", "inventory"],
         "recipe":  ["recipe", "ingredients", "formula"],
         "order":   ["order", "whatsapp", "message", "sms"],
         "catalog": ["catalog", "catalogue", "menu", "price list", "pricelist", "products"],
