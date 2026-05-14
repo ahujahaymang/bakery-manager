@@ -235,6 +235,8 @@ Return ONLY this JSON:
                 "summary": "Could not analyse the image",
                 "hint": "What type of image is this? (recipe / receipt / order / catalog)"
             }
+
+    async def process_receipt_image(self, image_bytes: bytes) -> Dict[str, Any]:
         """Process a receipt/payment image and extract payment details."""
         return await self._process_image(image_bytes, ImageType.RECEIPT)
 
