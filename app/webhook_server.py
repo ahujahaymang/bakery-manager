@@ -84,11 +84,18 @@ def register_instagram(instagram_listener):
 
 def register_booth():
     """
-    Register booth and Razorpay webhook routes.
+    Register booth routes and static files.
     Called once at startup from telegram_listener.
     """
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
     from app.booth.router import router as booth_router
     from app.booth.razorpay_router import router as razorpay_router
+
+    # Serve booth static files (CSS, JS)
+    static_dir = Path(__file__).parent / "booth" / "static"
+    app.mount("/booth/static", StaticFiles(directory=str(static_dir)), name="booth-static")
+
     app.include_router(booth_router)
     app.include_router(razorpay_router)
     logger.info("Booth routes registered at /booth/{tenant_id}")

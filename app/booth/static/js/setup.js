@@ -1,0 +1,180 @@
+/**
+ * setup.js — booth setup screen.
+ * Owner can multi-select products from catalog, set booth prices,
+ * add custom products, and create/update the booth session.
+ */
+
+let catalogData = null;       // full catalog from API
+let setupSelection = {};      // { variant_id: booth_price }
+let editingSession = false;   // true when adding to existing session
+
+async function openSetup(editing = false) {
+  editingSession = editing;
+  setupSelection = {};
+
+  // Pre-populate with current session items if editing
+  if (editing && window.session) {
+    for (const item of window.session.items) {
+      setupSelection[item.variant_id] = item.booth_price;
+    }
+  }
+
+  showScreen("setup");
+
+  try {
+    catalogData = await fetchCatalog();
+    renderSetup();
+  } catch (e) {
+    showToast("Could not load catalog: " + e.message);
+  }
+}
+
+function renderSetup() {
+  const container = document.getElementById("setup-categories");
+  container.innerHTML = "";
+
+  if (!catalogData || !catalogData.categories || catalogData.categories.length === 0) {
+    container.innerHTML = `<p style="color:var(--muted);padding:20px;text-align:center">
+      No products in catalog yet. Add products first.</p>`;
+    updateSetupFooter();
+    return;
+  }
+
+  for (const cat of catalogData.categories) {
+    const section = document.createElement("div");
+    section.className = "setup-section";
+    section.innerHTML = `<h3>${esc(cat.name)}</h3><div class="setup-product-list" id="cat-${esc(cat.name)}"></div>`;
+    container.appendChild(section);
+
+    const list = section.querySelector(".setup-product-list");
+    for (const product of cat.products) {
+      for (const variant of product.variants) {
+        const isSelected = variant.variant_id in setupSelection;
+        const currentPrice = setupSelection[variant.variant_id] || variant.price;
+
+        const row = document.createElement("div");
+        row.className = "setup-product-row" + (isSelected ? " selected" : "");
+        row.id = `setup-${variant.variant_id}`;
+        row.innerHTML = `
+          <div class="check" onclick="toggleSetupItem('${variant.variant_id}', ${variant.price})"></div>
+          <div class="setup-product-info">
+            <div class="name">${esc(product.name)}</div>
+            <div class="variants">${esc(variant.size_label)}</div>
+          </div>
+          <input class="setup-price-input" type="number" min="0" step="1"
+            value="${currentPrice}"
+            placeholder="₹"
+            onchange="updateSetupPrice('${variant.variant_id}', this.value)"
+            onclick="event.stopPropagation()"
+            ${isSelected ? "" : "disabled"}>
+        `;
+        list.appendChild(row);
+      }
+    }
+  }
+
+  updateSetupFooter();
+}
+
+function toggleSetupItem(variantId, defaultPrice) {
+  const row = document.getElementById(`setup-${variantId}`);
+  const input = row.querySelector(".setup-price-input");
+
+  if (variantId in setupSelection) {
+    delete setupSelection[variantId];
+    row.classList.remove("selected");
+    input.disabled = true;
+  } else {
+    setupSelection[variantId] = parseFloat(input.value) || defaultPrice;
+    row.classList.add("selected");
+    input.disabled = false;
+    input.focus();
+  }
+  updateSetupFooter();
+}
+
+function updateSetupPrice(variantId, value) {
+  if (variantId in setupSelection) {
+    setupSelection[variantId] = parseFloat(value) || 0;
+  }
+}
+
+function updateSetupFooter() {
+  const count = Object.keys(setupSelection).length;
+  document.getElementById("setup-count").textContent =
+    count === 0 ? "No products selected" : `${count} product variant${count !== 1 ? "s" : ""} selected`;
+  document.getElementById("create-booth-btn").disabled = count === 0;
+}
+
+function addCustomProduct() {
+  const name = document.getElementById("custom-name").value.trim();
+  const size = document.getElementById("custom-size").value.trim() || "standard";
+  const price = parseFloat(document.getElementById("custom-price").value);
+
+  if (!name || !price || price <= 0) {
+    showToast("Enter product name and price");
+    return;
+  }
+
+  // Add to a temporary "Custom" section in the selection
+  // We'll pass these as new products to the create endpoint
+  const tempId = `custom-${Date.now()}`;
+  setupSelection[tempId] = price;
+
+  // Store custom product details for the create call
+  if (!window.customProducts) window.customProducts = [];
+  window.customProducts.push({ temp_id: tempId, name, size_label: size, price });
+
+  showToast(`Added: ${name} (${size}) ₹${price}`);
+  document.getElementById("custom-name").value = "";
+  document.getElementById("custom-size").value = "";
+  document.getElementById("custom-price").value = "";
+  updateSetupFooter();
+}
+
+async function createBooth() {
+  const btn = document.getElementById("create-booth-btn");
+  btn.disabled = true;
+  btn.textContent = "Creating…";
+
+  const sessionName = document.getElementById("booth-name-input").value.trim() ||
+    `Booth ${new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}`;
+
+  const items = Object.entries(setupSelection)
+    .filter(([id]) => !id.startsWith("custom-"))
+    .map(([variant_id, booth_price]) => ({ variant_id, booth_price }));
+
+  const customItems = (window.customProducts || []).map(p => ({
+    custom: true,
+    name: p.name,
+    size_label: p.size_label,
+    booth_price: p.price,
+  }));
+
+  try {
+    const result = await createBoothSession(sessionName, [...items, ...customItems]);
+    window.session = await fetchActiveSession();
+    window.customProducts = [];
+    renderGrid();
+    showScreen("sell");
+    showToast(`✅ ${sessionName} is live!`);
+  } catch (e) {
+    showToast("Error: " + e.message);
+    btn.disabled = false;
+    btn.textContent = editingSession ? "Update Booth" : "Create Booth";
+  }
+}
+
+async function endBooth() {
+  if (!confirm("End the booth session? This will close sales for today.")) return;
+  try {
+    const summary = await endBoothSession();
+    window.session = null;
+    showScreen("sell");
+    showToast(`Session ended · ₹${fmt(summary.total_revenue || 0)} revenue`);
+    // Reload to show no-session state
+    setTimeout(() => location.reload(), 1500);
+  } catch (e) {
+    showToast("Error: " + e.message);
+  }
+}

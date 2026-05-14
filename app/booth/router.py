@@ -21,6 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -83,7 +84,163 @@ class CheckoutRequest(BaseModel):
     customer_name: Optional[str] = None
 
 
+class CreateSessionRequest(BaseModel):
+    name: str
+    items: List[Dict[str, Any]]  # [{variant_id, booth_price} or {custom:true, name, size_label, booth_price}]
+
+
+# ── Static files ───────────────────────────────────────────────────────────────
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/api/info")
+async def get_booth_info(tenant_id: str, ctx=Depends(_get_tenant_db)) -> Dict[str, Any]:
+    """Return basic tenant info for the booth UI."""
+    db, tid = ctx
+    from app.database import get_registry_db
+    reg_db = next(get_registry_db())
+    try:
+        tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == tid).first()
+        return {"business_name": tenant.business_name if tenant else "Booth"}
+    finally:
+        reg_db.close()
+
+
+@router.get("/{tenant_id}/api/catalog")
+async def get_catalog(tenant_id: str, ctx=Depends(_get_tenant_db)) -> Dict[str, Any]:
+    """Return the full product catalog grouped by category for the setup screen."""
+    db, tid = ctx
+    from app.services.product_service import ProductService
+    svc = ProductService(db)
+    products = svc.list_products(tid)
+
+    by_cat: Dict[str, list] = {}
+    for p in products:
+        cat = p.category or "Other"
+        if cat not in by_cat:
+            by_cat[cat] = []
+        by_cat[cat].append({
+            "product_id": str(p.product_id),
+            "name": p.name,
+            "variants": [
+                {
+                    "variant_id": str(v.variant_id),
+                    "size_label": v.size_label,
+                    "price": float(v.price),
+                }
+                for v in sorted(p.variants, key=lambda x: x.price)
+            ],
+        })
+
+    return {
+        "categories": [
+            {"name": cat, "products": prods}
+            for cat, prods in sorted(by_cat.items())
+        ]
+    }
+
+
+@router.post("/{tenant_id}/api/session/create")
+async def create_session(
+    tenant_id: str,
+    body: CreateSessionRequest,
+    ctx=Depends(_get_tenant_db),
+) -> Dict[str, Any]:
+    """Create a new booth session from the setup screen."""
+    db, tid = ctx
+    svc = BoothService(db, tid)
+
+    # End any existing active session first
+    existing = svc.get_active_session()
+    if existing:
+        svc.end_session(existing.session_id)
+
+    session = svc.start_session(body.name)
+    added = 0
+    errors = []
+
+    for item in body.items:
+        try:
+            if item.get("custom"):
+                # Custom product — create it in the catalog first
+                from app.services.product_service import ProductService, VariantInput
+                from decimal import Decimal as D
+                prod_svc = ProductService(db)
+                product = prod_svc.create_product(
+                    tenant_id=tid,
+                    name=item["name"],
+                    variants=[VariantInput(
+                        size_label=item.get("size_label", "standard"),
+                        price=D(str(item["booth_price"])),
+                    )],
+                )
+                variant = product.variants[0]
+                svc.add_item(
+                    session_id=session.session_id,
+                    variant_id=variant.variant_id,
+                    booth_price=D(str(item["booth_price"])),
+                )
+            else:
+                svc.add_item(
+                    session_id=session.session_id,
+                    variant_id=UUID(item["variant_id"]),
+                    booth_price=Decimal(str(item["booth_price"])),
+                )
+            added += 1
+        except Exception as e:
+            errors.append(str(e))
+
+    return {
+        "session_id": str(session.session_id),
+        "name": session.name,
+        "items_added": added,
+        "errors": errors,
+    }
+
+
+@router.post("/{tenant_id}/api/session/end")
+async def end_session(tenant_id: str, ctx=Depends(_get_tenant_db)) -> Dict[str, Any]:
+    """End the active booth session."""
+    db, tid = ctx
+    svc = BoothService(db, tid)
+    session = svc.get_active_session()
+    if not session:
+        raise HTTPException(status_code=404, detail="No active session")
+    closed = svc.end_session(session.session_id)
+    summary = svc.get_session_summary(closed.session_id)
+    return {
+        "name": summary.name,
+        "total_revenue": float(summary.total_revenue),
+        "total_orders": summary.total_orders,
+        "items_sold": summary.items_sold,
+    }
+
+
+@router.post("/{tenant_id}/api/cancel/{order_id}")
+async def cancel_order_endpoint(
+    tenant_id: str,
+    order_id: str,
+    ctx=Depends(_get_tenant_db),
+) -> Dict[str, str]:
+    """Cancel a booth order (void the sale)."""
+    db, tid = ctx
+    try:
+        oid = UUID(order_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid order_id")
+
+    order = db.query(Order).filter(Order.order_id == oid, Order.tenant_id == tid).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.status == "cancelled":
+        raise HTTPException(status_code=400, detail="Order already cancelled")
+
+    order.status = "cancelled"
+    db.commit()
+    return {"status": "cancelled"}
 
 @router.get("/{tenant_id}", response_class=HTMLResponse)
 async def serve_booth(tenant_id: str, request: Request):

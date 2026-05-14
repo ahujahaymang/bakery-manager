@@ -4,230 +4,84 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Booth — KitchenOS</title>
-<style>
-  /* ── Reset & base ─────────────────────────────────────────────── */
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  :root {
-    --primary: #1a1a2e;
-    --accent:  #e8445f;
-    --green:   #27ae60;
-    --grey:    #f4f4f4;
-    --border:  #e0e0e0;
-    --text:    #222;
-    --muted:   #888;
-    --radius:  12px;
-    --shadow:  0 2px 12px rgba(0,0,0,.10);
-  }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: var(--grey); color: var(--text); min-height: 100vh; }
-
-  /* ── Header ───────────────────────────────────────────────────── */
-  header {
-    background: var(--primary); color: #fff;
-    padding: 14px 16px; display: flex; align-items: center;
-    justify-content: space-between; position: sticky; top: 0; z-index: 100;
-  }
-  header h1 { font-size: 1.1rem; font-weight: 700; }
-  header .meta { font-size: .8rem; opacity: .75; text-align: right; }
-  header .meta strong { font-size: .95rem; opacity: 1; }
-
-  /* ── Screens ──────────────────────────────────────────────────── */
-  .screen { display: none; }
-  .screen.active { display: block; }
-
-  /* ── No-session state ─────────────────────────────────────────── */
-  #no-session {
-    text-align: center; padding: 60px 24px;
-  }
-  #no-session p { color: var(--muted); margin-top: 12px; font-size: .95rem; }
-
-  /* ── Product grid ─────────────────────────────────────────────── */
-  #product-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-    padding: 12px;
-    padding-bottom: 100px; /* space for cart bar */
-  }
-  .product-card {
-    background: #fff; border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 14px 12px;
-    display: flex; flex-direction: column; gap: 6px;
-  }
-  .product-card.sold-out { opacity: .45; pointer-events: none; }
-  .product-card .name { font-weight: 700; font-size: .95rem; line-height: 1.2; }
-  .product-card .variant { font-size: .8rem; color: var(--muted); }
-  .product-card .price { font-size: 1.05rem; font-weight: 700; color: var(--accent); }
-  .product-card .stock { font-size: .75rem; color: var(--muted); }
-  .product-card .sold-out-badge {
-    font-size: .75rem; font-weight: 700; color: var(--accent);
-    text-transform: uppercase; letter-spacing: .05em;
-  }
-  .qty-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-  .qty-btn {
-    width: 32px; height: 32px; border-radius: 50%;
-    border: 2px solid var(--accent); background: #fff;
-    color: var(--accent); font-size: 1.2rem; font-weight: 700;
-    cursor: pointer; display: flex; align-items: center; justify-content: center;
-    transition: background .15s, color .15s;
-  }
-  .qty-btn:active { background: var(--accent); color: #fff; }
-  .qty-val { font-size: 1.1rem; font-weight: 700; min-width: 24px; text-align: center; }
-
-  /* ── Cart bar ─────────────────────────────────────────────────── */
-  #cart-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: var(--primary); color: #fff;
-    padding: 14px 16px; display: flex; align-items: center;
-    justify-content: space-between; z-index: 200;
-    box-shadow: 0 -2px 12px rgba(0,0,0,.2);
-  }
-  #cart-bar.hidden { display: none; }
-  #cart-summary { font-size: .95rem; }
-  #cart-summary strong { font-size: 1.1rem; }
-  #checkout-btn {
-    background: var(--accent); color: #fff;
-    border: none; border-radius: 24px;
-    padding: 10px 22px; font-size: 1rem; font-weight: 700;
-    cursor: pointer; transition: opacity .15s;
-  }
-  #checkout-btn:active { opacity: .8; }
-
-  /* ── Checkout overlay ─────────────────────────────────────────── */
-  #checkout-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.5);
-    z-index: 300; display: flex; align-items: flex-end;
-  }
-  #checkout-overlay.hidden { display: none; }
-  #checkout-sheet {
-    background: #fff; border-radius: var(--radius) var(--radius) 0 0;
-    width: 100%; max-height: 90vh; overflow-y: auto;
-    padding: 20px 16px 32px;
-  }
-  #checkout-sheet h2 { font-size: 1.1rem; margin-bottom: 14px; }
-  .order-line { display: flex; justify-content: space-between;
-                font-size: .9rem; padding: 4px 0; }
-  .order-line.total { font-weight: 700; font-size: 1rem;
-                      border-top: 1px solid var(--border); margin-top: 8px; padding-top: 8px; }
-  .section-label { font-size: .8rem; font-weight: 700; color: var(--muted);
-                   text-transform: uppercase; letter-spacing: .05em;
-                   margin: 16px 0 8px; }
-  #customer-name-input {
-    width: 100%; padding: 10px 12px; border: 1px solid var(--border);
-    border-radius: 8px; font-size: 1rem; margin-bottom: 4px;
-  }
-  .payment-methods { display: flex; gap: 10px; margin-bottom: 16px; }
-  .pay-btn {
-    flex: 1; padding: 12px 0; border-radius: 10px;
-    border: 2px solid var(--border); background: #fff;
-    font-size: .95rem; font-weight: 600; cursor: pointer;
-    transition: border-color .15s, background .15s;
-  }
-  .pay-btn.selected { border-color: var(--accent); background: #fff5f7; color: var(--accent); }
-  #confirm-btn {
-    width: 100%; padding: 14px; background: var(--green); color: #fff;
-    border: none; border-radius: 10px; font-size: 1.05rem; font-weight: 700;
-    cursor: pointer; margin-top: 8px;
-  }
-  #confirm-btn:disabled { opacity: .5; cursor: not-allowed; }
-  #cancel-checkout-btn {
-    width: 100%; padding: 12px; background: none; color: var(--muted);
-    border: none; font-size: .95rem; cursor: pointer; margin-top: 8px;
-  }
-
-  /* ── QR overlay ───────────────────────────────────────────────── */
-  #qr-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,.85);
-    z-index: 400; display: flex; flex-direction: column;
-    align-items: center; justify-content: center; gap: 16px;
-    color: #fff; text-align: center; padding: 24px;
-  }
-  #qr-overlay.hidden { display: none; }
-  #qr-overlay img { width: 240px; height: 240px; border-radius: 12px; background: #fff; }
-  #qr-overlay .amount { font-size: 1.4rem; font-weight: 700; }
-  #qr-overlay .hint { font-size: .9rem; opacity: .75; }
-  #qr-cancel-btn {
-    padding: 10px 28px; border-radius: 24px;
-    border: 2px solid rgba(255,255,255,.4); background: none;
-    color: #fff; font-size: .95rem; cursor: pointer; margin-top: 8px;
-  }
-  #qr-expired-msg { color: var(--accent); font-weight: 700; display: none; }
-
-  /* ── Receipt screen ───────────────────────────────────────────── */
-  #receipt-screen { padding: 16px; padding-bottom: 80px; }
-  #receipt-box {
-    background: #fff; border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 20px 16px;
-    font-family: monospace; font-size: .9rem; max-width: 360px; margin: 0 auto;
-  }
-  #receipt-box .biz { font-size: 1.1rem; font-weight: 700; text-align: center;
-                      margin-bottom: 4px; }
-  #receipt-box .divider { border: none; border-top: 1px dashed #ccc; margin: 8px 0; }
-  #receipt-box .r-line { display: flex; justify-content: space-between; padding: 2px 0; }
-  #receipt-box .r-total { font-weight: 700; border-top: 1px solid #ccc;
-                          margin-top: 6px; padding-top: 6px; }
-  #receipt-box .thank { text-align: center; margin-top: 12px;
-                        font-size: .85rem; color: var(--muted); }
-  .receipt-actions {
-    display: flex; gap: 12px; max-width: 360px; margin: 16px auto 0;
-  }
-  .receipt-actions button {
-    flex: 1; padding: 13px; border-radius: 10px; font-size: 1rem;
-    font-weight: 700; cursor: pointer; border: none;
-  }
-  #print-btn { background: var(--primary); color: #fff; }
-  #new-sale-btn { background: var(--green); color: #fff; }
-
-  /* ── Spinner ──────────────────────────────────────────────────── */
-  .spinner {
-    width: 36px; height: 36px; border: 4px solid rgba(255,255,255,.3);
-    border-top-color: #fff; border-radius: 50%;
-    animation: spin .7s linear infinite; margin: 0 auto;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ── Print styles ─────────────────────────────────────────────── */
-  @media print {
-    @page { size: 80mm auto; margin: 4mm; }
-    body { background: #fff; }
-    header, #cart-bar, .receipt-actions, #checkout-overlay, #qr-overlay { display: none !important; }
-    #receipt-screen { padding: 0; }
-    #receipt-box { box-shadow: none; border-radius: 0; max-width: 100%; }
-  }
-</style>
+<link rel="stylesheet" href="/booth/static/css/booth.css">
 </head>
 <body>
 
 <header>
   <h1>🏪 Booth</h1>
   <div class="meta" id="session-meta"></div>
+  <div class="header-actions">
+    <button class="header-btn" id="header-setup-btn"
+      onclick="openSetup(true)" style="display:none">+ Products</button>
+    <button class="header-btn danger" id="header-end-btn"
+      onclick="endBooth()" style="display:none">End Booth</button>
+  </div>
 </header>
 
-<!-- Sell screen -->
+<!-- ── Sell screen ──────────────────────────────────────────────── -->
 <div id="sell-screen" class="screen active">
   <div id="no-session">
     <h2>No active booth session</h2>
     <p>Set one up in Telegram by saying<br><strong>"set up booth"</strong></p>
+    <button class="setup-btn" onclick="openSetup(false)">Set Up Booth Here</button>
   </div>
   <div id="product-grid" style="display:none"></div>
 </div>
 
-<!-- Receipt screen -->
+<!-- ── Setup screen ─────────────────────────────────────────────── -->
+<div id="setup-screen" class="screen">
+  <div style="padding:12px 12px 0">
+    <input id="booth-name-input" type="text"
+      placeholder="Session name (e.g. Delhi Food Fest)"
+      style="width:100%;padding:10px 12px;border:1px solid var(--border);
+             border-radius:8px;font-size:.95rem;margin-bottom:4px">
+  </div>
+
+  <!-- Catalog products -->
+  <div id="setup-categories" style="padding:8px 12px 0"></div>
+
+  <!-- Add custom product -->
+  <div style="padding:8px 12px">
+    <div class="setup-section">
+      <h3>Add a custom product (not in catalog)</h3>
+      <div class="custom-product-form">
+        <input id="custom-name" type="text" placeholder="Product name">
+        <div class="row">
+          <input id="custom-size" type="text" placeholder="Size / variant (e.g. per piece)">
+          <input id="custom-price" type="number" min="0" step="1" placeholder="₹ Price">
+        </div>
+        <button class="add-custom-btn" onclick="addCustomProduct()">+ Add to booth</button>
+      </div>
+    </div>
+  </div>
+
+  <div style="height:80px"></div><!-- spacer for footer -->
+
+  <div class="setup-footer">
+    <span class="count" id="setup-count">No products selected</span>
+    <button class="create-booth-btn" id="create-booth-btn"
+      onclick="createBooth()" disabled>Create Booth</button>
+  </div>
+</div>
+
+<!-- ── Receipt screen ───────────────────────────────────────────── -->
 <div id="receipt-screen" class="screen">
   <div id="receipt-box"></div>
   <div class="receipt-actions">
     <button id="print-btn" onclick="window.print()">🖨 Print</button>
     <button id="new-sale-btn" onclick="newSale()">+ New Sale</button>
+    <button id="cancel-sale-btn" onclick="cancelSale()">✕ Cancel Sale</button>
   </div>
 </div>
 
-<!-- Cart bar -->
+<!-- ── Cart bar ──────────────────────────────────────────────────── -->
 <div id="cart-bar" class="hidden">
   <div id="cart-summary"></div>
   <button id="checkout-btn" onclick="openCheckout()">Checkout →</button>
 </div>
 
-<!-- Checkout sheet -->
+<!-- ── Checkout sheet ────────────────────────────────────────────── -->
 <div id="checkout-overlay" class="hidden" onclick="closeCheckoutIfOutside(event)">
   <div id="checkout-sheet">
     <h2>Order Summary</h2>
@@ -245,7 +99,7 @@
   </div>
 </div>
 
-<!-- Razorpay QR overlay -->
+<!-- ── Razorpay QR overlay ───────────────────────────────────────── -->
 <div id="qr-overlay" class="hidden">
   <div class="amount" id="qr-amount"></div>
   <img id="qr-img" src="" alt="Scan to pay">
@@ -256,342 +110,20 @@
   <button id="qr-cancel-btn" onclick="cancelQR()">Cancel</button>
 </div>
 
-<script>
-const TENANT_ID = "{{ tenant_id }}";
-const API = `/booth/${TENANT_ID}/api`;
+<!-- ── Toast ─────────────────────────────────────────────────────── -->
+<div id="toast"></div>
 
-// ── State ──────────────────────────────────────────────────────────────────
-let session = null;       // active session object from API
-let cart = {};            // { variant_id: quantity }
-let selectedPayment = "cash";
-let pendingOrderId = null;
-let qrPollTimer = null;
-let qrExpireTimer = null;
+<!-- TENANT_ID injected by server -->
+<script>const TENANT_ID = "{{ tenant_id }}";</script>
 
-// ── Boot ───────────────────────────────────────────────────────────────────
-async function boot() {
-  try {
-    const res = await fetch(`${API}/session/active`);
-    const data = await res.json();
-    session = data.session;
-  } catch (e) {
-    console.error("Failed to load session", e);
-  }
+<!-- Modules — order matters: api first, then state, then UI, then app -->
+<script src="/booth/static/js/api.js"></script>
+<script src="/booth/static/js/cart.js"></script>
+<script src="/booth/static/js/checkout.js"></script>
+<script src="/booth/static/js/receipt.js"></script>
+<script src="/booth/static/js/qr.js"></script>
+<script src="/booth/static/js/setup.js"></script>
+<script src="/booth/static/js/app.js"></script>
 
-  if (!session) {
-    document.getElementById("no-session").style.display = "block";
-    document.getElementById("product-grid").style.display = "none";
-    return;
-  }
-
-  document.getElementById("no-session").style.display = "none";
-  document.getElementById("product-grid").style.display = "grid";
-  document.getElementById("session-meta").innerHTML =
-    `<div>${session.name}</div><strong id="sale-count">0 sales</strong>`;
-
-  renderGrid();
-}
-
-// ── Grid ───────────────────────────────────────────────────────────────────
-function renderGrid() {
-  const grid = document.getElementById("product-grid");
-  grid.innerHTML = "";
-
-  // Group by product name, sort alphabetically
-  const grouped = {};
-  for (const item of session.items) {
-    if (!grouped[item.product_name]) grouped[item.product_name] = [];
-    grouped[item.product_name].push(item);
-  }
-
-  for (const [productName, variants] of Object.entries(grouped).sort()) {
-    for (const item of variants.sort((a, b) => a.variant_label.localeCompare(b.variant_label))) {
-      const soldOut = item.remaining !== null && item.remaining <= 0;
-      const qty = cart[item.variant_id] || 0;
-
-      const card = document.createElement("div");
-      card.className = "product-card" + (soldOut ? " sold-out" : "");
-      card.id = `card-${item.variant_id}`;
-      card.innerHTML = `
-        <div class="name">${esc(productName)}</div>
-        <div class="variant">${esc(item.variant_label)}</div>
-        <div class="price">₹${item.booth_price.toLocaleString("en-IN")}</div>
-        ${soldOut
-          ? `<div class="sold-out-badge">Sold Out</div>`
-          : `<div class="stock">${item.remaining === null ? "∞" : item.remaining + " left"}</div>
-             <div class="qty-row">
-               <button class="qty-btn" onclick="changeQty('${item.variant_id}', -1)">−</button>
-               <span class="qty-val" id="qty-${item.variant_id}">${qty}</span>
-               <button class="qty-btn" onclick="changeQty('${item.variant_id}', 1)">+</button>
-             </div>`
-        }
-      `;
-      grid.appendChild(card);
-    }
-  }
-}
-
-function changeQty(variantId, delta) {
-  const item = session.items.find(i => i.variant_id === variantId);
-  if (!item) return;
-
-  const current = cart[variantId] || 0;
-  const next = Math.max(0, current + delta);
-
-  // Don't exceed remaining stock
-  if (delta > 0 && item.remaining !== null && next > item.remaining) return;
-
-  if (next === 0) delete cart[variantId];
-  else cart[variantId] = next;
-
-  document.getElementById(`qty-${variantId}`).textContent = next;
-  updateCartBar();
-}
-
-function updateCartBar() {
-  const bar = document.getElementById("cart-bar");
-  const totalQty = Object.values(cart).reduce((a, b) => a + b, 0);
-  const totalAmt = Object.entries(cart).reduce((sum, [vid, qty]) => {
-    const item = session.items.find(i => i.variant_id === vid);
-    return sum + (item ? item.booth_price * qty : 0);
-  }, 0);
-
-  if (totalQty === 0) {
-    bar.classList.add("hidden");
-    return;
-  }
-  bar.classList.remove("hidden");
-  document.getElementById("cart-summary").innerHTML =
-    `${totalQty} item${totalQty > 1 ? "s" : ""} · <strong>₹${totalAmt.toLocaleString("en-IN")}</strong>`;
-}
-
-// ── Checkout ───────────────────────────────────────────────────────────────
-function openCheckout() {
-  const lines = document.getElementById("order-lines");
-  lines.innerHTML = "";
-  let total = 0;
-
-  for (const [vid, qty] of Object.entries(cart)) {
-    const item = session.items.find(i => i.variant_id === vid);
-    if (!item) continue;
-    const lineTotal = item.booth_price * qty;
-    total += lineTotal;
-    const div = document.createElement("div");
-    div.className = "order-line";
-    div.innerHTML = `
-      <span>${esc(item.product_name)} ${esc(item.variant_label)} × ${qty}</span>
-      <span>₹${lineTotal.toLocaleString("en-IN")}</span>
-    `;
-    lines.appendChild(div);
-  }
-
-  const totalDiv = document.createElement("div");
-  totalDiv.className = "order-line total";
-  totalDiv.innerHTML = `<span>Total</span><span>₹${total.toLocaleString("en-IN")}</span>`;
-  lines.appendChild(totalDiv);
-
-  document.getElementById("customer-name-input").value = "";
-  selectPayment("cash");
-  document.getElementById("checkout-overlay").classList.remove("hidden");
-}
-
-function closeCheckout() {
-  document.getElementById("checkout-overlay").classList.add("hidden");
-}
-
-function closeCheckoutIfOutside(e) {
-  if (e.target === document.getElementById("checkout-overlay")) closeCheckout();
-}
-
-function selectPayment(method) {
-  selectedPayment = method;
-  document.querySelectorAll(".pay-btn").forEach(btn => {
-    btn.classList.toggle("selected", btn.dataset.method === method);
-  });
-}
-
-async function confirmCheckout() {
-  const btn = document.getElementById("confirm-btn");
-  btn.disabled = true;
-  btn.textContent = "Processing…";
-
-  const items = Object.entries(cart).map(([variant_id, quantity]) => ({
-    variant_id, quantity
-  }));
-  const customerName = document.getElementById("customer-name-input").value.trim() || null;
-
-  try {
-    const res = await fetch(`${API}/checkout`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        session_id: session.session_id,
-        items,
-        payment_method: selectedPayment,
-        customer_name: customerName,
-      }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      alert("Error: " + (err.detail || "Checkout failed"));
-      btn.disabled = false;
-      btn.textContent = "Confirm Sale";
-      return;
-    }
-
-    const order = await res.json();
-    closeCheckout();
-
-    if (selectedPayment === "razorpay" && order.razorpay_qr_url) {
-      showQR(order);
-    } else {
-      // Cash or UPI — show receipt immediately
-      showReceipt(order);
-      updateSessionStats();
-    }
-
-  } catch (e) {
-    alert("Network error. Please try again.");
-    btn.disabled = false;
-    btn.textContent = "Confirm Sale";
-  }
-}
-
-// ── Razorpay QR ────────────────────────────────────────────────────────────
-function showQR(order) {
-  pendingOrderId = order.order_id;
-  document.getElementById("qr-amount").textContent =
-    `₹${order.total_amount.toLocaleString("en-IN")}`;
-  document.getElementById("qr-img").src = order.razorpay_qr_url;
-  document.getElementById("qr-expired-msg").style.display = "none";
-  document.getElementById("qr-status-text").textContent = "Waiting for payment…";
-  document.getElementById("qr-spinner").style.display = "block";
-  document.getElementById("qr-overlay").classList.remove("hidden");
-
-  // Poll for payment confirmation every 2 seconds
-  qrPollTimer = setInterval(() => pollPaymentStatus(order), 2000);
-
-  // QR expires after 15 minutes
-  qrExpireTimer = setTimeout(() => {
-    clearInterval(qrPollTimer);
-    document.getElementById("qr-expired-msg").style.display = "block";
-    document.getElementById("qr-status-text").textContent = "";
-    document.getElementById("qr-spinner").style.display = "none";
-  }, 15 * 60 * 1000);
-}
-
-async function pollPaymentStatus(order) {
-  try {
-    const res = await fetch(`${API}/checkout/status/${order.order_id}`);
-    const data = await res.json();
-    if (data.status === "completed") {
-      clearInterval(qrPollTimer);
-      clearTimeout(qrExpireTimer);
-      document.getElementById("qr-overlay").classList.add("hidden");
-      showReceipt(order);
-      updateSessionStats();
-    }
-  } catch (e) { /* ignore network blips */ }
-}
-
-function cancelQR() {
-  clearInterval(qrPollTimer);
-  clearTimeout(qrExpireTimer);
-  document.getElementById("qr-overlay").classList.add("hidden");
-  pendingOrderId = null;
-}
-
-async function retryQR() {
-  // Re-run checkout with same cart — creates a new order + QR
-  await confirmCheckout();
-}
-
-// ── Receipt ────────────────────────────────────────────────────────────────
-function showReceipt(order) {
-  cart = {};
-  updateCartBar();
-
-  // Reload session items to get updated sold_qty
-  fetch(`${API}/session/active`)
-    .then(r => r.json())
-    .then(data => { if (data.session) { session = data.session; renderGrid(); } });
-
-  const box = document.getElementById("receipt-box");
-  const now = new Date();
-  const dateStr = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
-
-  let itemsHtml = order.items.map(i => `
-    <div class="r-line">
-      <span>${esc(i.product_name)} ${esc(i.variant_label)} ×${i.quantity}</span>
-      <span>₹${i.line_total.toLocaleString("en-IN")}</span>
-    </div>
-  `).join("");
-
-  box.innerHTML = `
-    <div class="biz" id="receipt-biz-name">Loading…</div>
-    <hr class="divider">
-    <div class="r-line"><span>Date</span><span>${dateStr}</span></div>
-    <div class="r-line"><span>Order</span><span>#${order.order_id.slice(0,8).toUpperCase()}</span></div>
-    <hr class="divider">
-    ${itemsHtml}
-    <div class="r-line r-total">
-      <span>Total</span>
-      <span>₹${order.total_amount.toLocaleString("en-IN")}</span>
-    </div>
-    <div class="r-line">
-      <span>Paid (${esc(order.payment_method)})</span>
-      <span>₹${order.total_amount.toLocaleString("en-IN")}</span>
-    </div>
-    <div class="thank">Thank you! 🎉</div>
-  `;
-
-  // Fetch business name asynchronously
-  fetch(`${API}/session/active`)
-    .then(r => r.json())
-    .then(() => {
-      // Business name comes from receipt endpoint
-      fetch(`${API}/receipt/${order.order_id}`)
-        .then(r => r.text())
-        .then(html => {
-          const parser = new DOMParser();
-          const doc = parser.parseFromString(html, "text/html");
-          const biz = doc.querySelector(".biz");
-          if (biz) document.getElementById("receipt-biz-name").textContent = biz.textContent;
-        }).catch(() => {});
-    }).catch(() => {});
-
-  showScreen("receipt");
-}
-
-function newSale() {
-  showScreen("sell");
-}
-
-// ── Session stats ──────────────────────────────────────────────────────────
-let saleCount = 0;
-function updateSessionStats() {
-  saleCount++;
-  const el = document.getElementById("sale-count");
-  if (el) el.textContent = `${saleCount} sale${saleCount !== 1 ? "s" : ""}`;
-}
-
-// ── Utilities ──────────────────────────────────────────────────────────────
-function showScreen(name) {
-  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
-  document.getElementById(name + "-screen").classList.add("active");
-}
-
-function esc(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-// ── Init ───────────────────────────────────────────────────────────────────
-boot();
-</script>
 </body>
 </html>
