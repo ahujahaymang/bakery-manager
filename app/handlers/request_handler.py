@@ -209,6 +209,22 @@ class RequestHandler:
                         image_subtype=image_subtype,
                     )
 
+            # Owner corrected the type — handle common corrections
+            correction_map = {
+                "inventory": ("receipt", "receipt_purchase"),
+                "purchase": ("receipt", "receipt_purchase"),
+                "ingredient": ("receipt", "receipt_purchase"),
+                "customer payment": ("receipt", "receipt_customer"),
+                "payment": ("receipt", "receipt_customer"),
+            }
+            for keyword, (ext_type, sub_type) in correction_map.items():
+                if keyword in text_lower:
+                    del self._pending_images[chat_id]
+                    return await self._process_confirmed_image(
+                        tenant_id, chat_id, image_bytes, ext_type,
+                        image_subtype=sub_type,
+                    )
+
             # Owner gave a type keyword — use that instead
             detected = self._detect_image_type(text)
             if detected:
@@ -524,13 +540,15 @@ class RequestHandler:
             confirm_msg = (
                 f"📄 {summary_text}\n\n"
                 f"{hint or 'Should I update your inventory with these items?'}\n\n"
-                "Reply *yes* to update inventory, or tell me what you'd like to do."
+                "Reply *yes* to update inventory, *customer payment* if this is a customer receipt, "
+                "or tell me what you'd like to do."
             )
         elif image_type == "receipt_customer":
             confirm_msg = (
                 f"💳 {summary_text}\n\n"
                 f"{hint or 'Should I record this as a customer payment?'}\n\n"
-                "Reply *yes* to record the payment, or tell me what you'd like to do."
+                "Reply *yes* to record the payment, *inventory* if this is an ingredient purchase, "
+                "or tell me what you'd like to do."
             )
         elif image_type == "recipe":
             confirm_msg = (

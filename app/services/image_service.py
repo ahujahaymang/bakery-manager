@@ -209,19 +209,29 @@ Include ALL text visible in the image in the raw_text field."""
         prompt = f"""Look at this image carefully. {caption_hint}
 
 Classify it into exactly one of these types:
+
 - recipe: A handwritten or printed recipe with ingredients and quantities
-- receipt_customer: A payment receipt showing money received FROM a customer (for an order/sale)
-- receipt_purchase: A purchase receipt/bill showing money SPENT by the owner (buying ingredients, supplies, packaging)
+- receipt_purchase: A bill/receipt where the BAKERY OWNER spent money buying ingredients,
+  supplies, or packaging from a vendor/shop. Signs: vendor/shop name at top, list of
+  food ingredients (flour, sugar, butter, chocolate, etc.), packaging materials,
+  raw materials. The bakery is the BUYER.
+- receipt_customer: A receipt showing a CUSTOMER paid the bakery for baked goods/products.
+  Signs: bakery name at top as seller, items are finished products (cakes, cookies, etc.),
+  customer name present.
 - order: A WhatsApp/SMS/chat screenshot showing a customer placing an order
 - catalog: A product menu or price list showing items for sale with prices
 - unknown: Cannot determine
+
+Key distinction for receipts: If the items listed are RAW INGREDIENTS or SUPPLIES
+(flour, sugar, butter, milk, packaging boxes, etc.) → receipt_purchase.
+If the items are FINISHED BAKED PRODUCTS (cakes, cookies, brownies, etc.) → receipt_customer.
 
 Return ONLY this JSON:
 {{
   "type": "<one of the types above>",
   "confidence": <0.0 to 1.0>,
   "summary": "<one sentence: what you see in the image>",
-  "hint": "<short question to confirm with owner, e.g. 'This looks like an ingredient purchase receipt for ₹2364. Should I update your inventory?'>"
+  "hint": "<short question to confirm with owner>"
 }}"""
 
         try:
