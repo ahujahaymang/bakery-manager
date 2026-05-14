@@ -112,11 +112,14 @@ class AgentService:
         # Run all planned tool calls in parallel. No LLM involved.
         tool_results = await self._execute_parallel(tool_calls, tool_executor)
 
-        # Check for special pass-through results (PDF, Instagram URL)
+        # Check for special pass-through results (PDF, Instagram URL, CHOOSE: picker)
         for _, result in tool_results:
             if isinstance(result, str) and result.startswith("INVOICE_PDF:"):
                 return result
             if isinstance(result, str) and result.startswith("INSTAGRAM_CONNECT_URL:"):
+                return result
+            if isinstance(result, str) and "CHOOSE:" in result:
+                # Pass CHOOSE: markers directly — don't let summarise reformat them
                 return result
 
         # Append all tool results to the message list

@@ -86,9 +86,12 @@ Product catalog rules:
 Booth / exhibition mode rules:
 - When the owner says they want to set up a booth or exhibition:
   1. Call list_product_categories (NOT list_products — too slow for large catalogs)
-  2. Use CHOOSE: to ask which categories to bring to the event
-  3. After owner picks categories, call create_booth_from_categories — this adds ALL products
-     from those categories at catalog prices in one step
+  2. The result contains a CHOOSE: block — pass it through as-is, do NOT reformat it
+  3. After owner picks categories (e.g. "Desserts" or "Desserts and Baked Savouries"):
+     a. Ask: "Bring ALL products from these categories, or specific ones?"
+     b. If ALL → call create_booth_from_categories immediately
+     c. If specific → call list_products with that category filter, show the list,
+        ask which ones, then call create_booth_session with those variant_ids
   4. Always include the booth URL in the response
 - booth_price defaults to catalog price — only ask if owner wants different event pricing
 - When the owner asks for the booth link or to open the booth, call get_booth_url

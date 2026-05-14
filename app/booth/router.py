@@ -95,8 +95,9 @@ async def serve_booth(tenant_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Invalid tenant ID")
 
     return templates.TemplateResponse(
-        "booth.html",
-        {"request": request, "tenant_id": tenant_id},
+        request=request,
+        name="booth.html",
+        context={"tenant_id": tenant_id},
     )
 
 
@@ -264,9 +265,9 @@ async def receipt(
     total = sum(i["total"] for i in items)
 
     return templates.TemplateResponse(
-        "receipt.html",
-        {
-            "request": request,
+        request=request,
+        name="receipt.html",
+        context={
             "business_name": business_name,
             "order_id": str(oid)[:8].upper(),
             "date": order.created_at.strftime("%d %b %Y") if order.created_at else "",
