@@ -12,11 +12,17 @@ async function boot() {
     console.error("Failed to load session", e);
   }
 
-  if (!window.session) {
+  // Show setup screen if no session OR session has no items yet
+  if (!window.session || window.session.items.length === 0) {
     document.getElementById("no-session").style.display = "block";
     document.getElementById("product-grid").style.display = "none";
     document.getElementById("header-setup-btn").style.display = "none";
     document.getElementById("header-end-btn").style.display = "none";
+    // If there's a session but no items, pre-fill the session name
+    if (window.session && window.session.items.length === 0) {
+      const nameInput = document.getElementById("booth-name-input");
+      if (nameInput) nameInput.value = window.session.name;
+    }
     return;
   }
 

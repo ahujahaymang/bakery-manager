@@ -85,14 +85,14 @@ Product catalog rules:
 
 Booth / exhibition mode rules:
 - When the owner says they want to set up a booth or exhibition:
-  1. Ask for the event name (e.g. "Delhi Food Fest")
-  2. Call create_booth_from_categories with ALL categories (pass ["all"]) — this adds everything
+  1. Ask ONLY for the event name (e.g. "Delhi Food Fest")
+  2. Call create_booth_from_categories with name=<event name> and categories=["all"]
   3. Give the owner the booth URL and say:
-     "Your booth is ready! Open the link to choose which products to show and set prices.
-      You can add or remove products anytime from the booth page."
-  4. Do NOT ask which categories — the web app handles product selection
-- When the owner asks for the booth link or to open the booth, call get_booth_url
-- When the owner asks how much they sold at an event, call get_booth_session_summary
+     "Your booth is ready! Open the link on your phone to select which products to show,
+      set prices, and start selling. You can add or remove products anytime from the booth page."
+  4. Do NOT ask about categories, products, or prices — the web app handles all of that
+- When the owner asks for the booth link, call get_booth_url
+- When the owner asks how much they sold, call get_booth_session_summary
 - To close the session after the event, call end_booth_session
 """
 

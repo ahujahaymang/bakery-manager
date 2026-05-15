@@ -633,7 +633,8 @@ class ToolExecutor:
         )
 
     async def _tool_create_booth_from_categories(self, args):
-        """Create a booth session with all products from the specified categories."""
+        """Create a booth session with all products from the specified categories.
+        Pass categories=["all"] to include everything."""
         from app.booth.booth_service import BoothService
         from app.services.product_service import ProductService
         from app.config import settings
@@ -645,18 +646,21 @@ class ToolExecutor:
         prod_svc = ProductService(self.db)
         all_products = prod_svc.list_products(self.tenant_id)
 
-        # Filter to chosen categories (case-insensitive)
-        # "All categories" means include everything
-        if any(c.lower() in ("all", "all categories") for c in chosen_categories):
+        # "all" or "all categories" → include everything
+        include_all = any(c.lower() in ("all", "all categories") for c in chosen_categories)
+        if include_all:
             selected = all_products
         else:
             chosen_lower = {c.lower() for c in chosen_categories}
             selected = [p for p in all_products if p.category and p.category.lower() in chosen_lower]
 
-        if not selected:
-            return f"No products found in categories: {', '.join(chosen_categories)}"
-
         booth_svc = BoothService(self.db, self.tenant_id)
+
+        # End any existing active session first
+        existing = booth_svc.get_active_session()
+        if existing:
+            booth_svc.end_session(existing.session_id)
+
         session = booth_svc.start_session(session_name)
 
         added = 0
@@ -668,11 +672,11 @@ class ToolExecutor:
                         session_id=session.session_id,
                         variant_id=variant.variant_id,
                         booth_price=Decimal(str(variant.price)),
-                        stock_qty=None,  # unlimited by default
+                        stock_qty=None,
                     )
                     added += 1
                 except Exception as e:
-                    errors.append(f"{product.name} ({variant.size_label}): {e}")
+                    errors.append(f"{product.name}: {e}")
 
         booth_url = (
             f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}"
@@ -681,14 +685,11 @@ class ToolExecutor:
         )
 
         lines = [
-            f"✅ Booth *{session_name}* created with {added} product variant(s) "
-            f"from {len(selected)} products.",
-            f"\n🏪 Open your booth:\n{booth_url}",
-            "\nBookmark it — the link never changes.",
-            "\nAll items are priced at catalog prices. Say 'change price for X' to adjust.",
+            f"✅ Booth *{session_name}* is ready with {added} product variant(s).",
+            f"\n🏪 Open on your phone to select products and start selling:\n{booth_url}",
         ]
         if errors:
-            lines.append(f"\n⚠️ Some items skipped: {'; '.join(errors[:3])}")
+            lines.append(f"\n⚠️ {len(errors)} items skipped.")
         return "\n".join(lines)
 
     async def _tool_create_booth_session(self, args):

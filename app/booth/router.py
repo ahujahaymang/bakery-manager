@@ -165,32 +165,43 @@ async def create_session(
     for item in body.items:
         try:
             if item.get("custom"):
-                # Custom product — create it in the catalog first
                 from app.services.product_service import ProductService, VariantInput
                 from decimal import Decimal as D
                 prod_svc = ProductService(db)
-                product = prod_svc.create_product(
-                    tenant_id=tid,
-                    name=item["name"],
-                    variants=[VariantInput(
-                        size_label=item.get("size_label", "standard"),
-                        price=D(str(item["booth_price"])),
-                    )],
-                )
-                variant = product.variants[0]
-                svc.add_item(
-                    session_id=session.session_id,
-                    variant_id=variant.variant_id,
-                    booth_price=D(str(item["booth_price"])),
-                )
+                try:
+                    product = prod_svc.create_product(
+                        tenant_id=tid,
+                        name=item["name"],
+                        variants=[VariantInput(
+                            size_label=item.get("size_label", "standard"),
+                            price=D(str(item["booth_price"])),
+                        )],
+                    )
+                except ValueError:
+                    # Product already exists — find it
+                    product = prod_svc.get_product(tid, item["name"])
+                if product and product.variants:
+                    variant = product.variants[0]
+                    svc.add_item(
+                        session_id=session.session_id,
+                        variant_id=variant.variant_id,
+                        booth_price=Decimal(str(item["booth_price"])),
+                    )
+                    added += 1
             else:
+                vid = item.get("variant_id")
+                price = item.get("booth_price")
+                if not vid or price is None:
+                    errors.append(f"Missing variant_id or booth_price: {item}")
+                    continue
                 svc.add_item(
                     session_id=session.session_id,
-                    variant_id=UUID(item["variant_id"]),
-                    booth_price=Decimal(str(item["booth_price"])),
+                    variant_id=UUID(str(vid)),
+                    booth_price=Decimal(str(price)),
                 )
-            added += 1
+                added += 1
         except Exception as e:
+            logger.error(f"Failed to add booth item {item}: {e}")
             errors.append(str(e))
 
     return {
