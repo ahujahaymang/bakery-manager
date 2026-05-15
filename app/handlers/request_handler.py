@@ -24,7 +24,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Number of message turns kept in memory per conversation
-MAX_HISTORY = 20
+MAX_HISTORY = 8  # keep in sync with conversation_service.MAX_HISTORY
 
 
 @contextmanager
@@ -177,6 +177,10 @@ class RequestHandler:
         # /report — send last error context to admin
         if text.lower() == "/report":
             return await self._handle_report_command(chat_id)
+
+        # /clear — reset conversation history when bot gets confused
+        if text.lower() in ("/clear", "/reset", "/start over"):
+            return await self._handle_clear_command(chat_id, tenant_id)
 
         # /feedback <text> — send feedback to admin
         if text.lower().startswith("/feedback"):
@@ -367,6 +371,30 @@ class RequestHandler:
             logger.warning(f"Could not notify admin of new signup: {e}")
 
     # ── Owner commands ─────────────────────────────────────────────────────
+
+    async def _handle_clear_command(self, chat_id: str, tenant_id: UUID) -> str:
+        """
+        /clear — wipe conversation history so the bot starts fresh.
+        Useful when the bot gets stuck in an old pattern (e.g. keeps asking
+        about booth categories after the flow changed).
+        """
+        # Clear in-memory cache
+        self._history[chat_id] = []
+        self._pending_images.pop(chat_id, None)
+        self._last_error.pop(chat_id, None)
+
+        # Clear persisted DB history
+        try:
+            with _open_db(tenant_id) as db:
+                from app.services.conversation_service import ConversationService
+                ConversationService(db, tenant_id).clear(chat_id)
+        except Exception as e:
+            logger.warning(f"Could not clear DB history: {e}")
+
+        return (
+            "✅ Conversation history cleared.\n\n"
+            "I've forgotten our previous conversation. What would you like to do?"
+        )
 
     async def _handle_report_command(self, chat_id: str) -> str:
         """
@@ -609,7 +637,7 @@ class RequestHandler:
             executor = ToolExecutor(db, tenant_id)
             response = await self.agent.run(
                 user_message=summary,
-                history=self._get_history(chat_id),
+                history=self._load_history(db, tenant_id, chat_id),
                 tool_executor=executor.execute,
             )
 

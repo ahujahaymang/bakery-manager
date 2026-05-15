@@ -19,7 +19,7 @@ from app.models import ConversationMessage
 logger = logging.getLogger(__name__)
 
 # How many most-recent messages to load per (tenant, chat) pair
-MAX_HISTORY = 20
+MAX_HISTORY = 8  # 8 turns = enough context, not enough to carry stale patterns
 
 
 class ConversationService:
