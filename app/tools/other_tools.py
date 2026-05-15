@@ -45,11 +45,8 @@ class OtherTools:
 
         fn("create_booth_session",
            "Create a new exhibition booth session. "
-           "IMPORTANT: Do NOT call list_products first — it returns too many items. "
-           "Instead: (1) call list_product_categories to get category names, "
-           "(2) use CHOOSE: to ask which categories to bring, "
-           "(3) call create_booth_from_categories with the chosen categories. "
-           "Returns the booth URL.",
+           "Ask for the event name, then call create_booth_from_categories with categories=['all']. "
+           "Do NOT ask about categories or products — the web app handles product selection.",
            {
                "name": str_prop("Event name, e.g. 'Pune Food Fest May 2026'"),
                "items": {
@@ -67,11 +64,6 @@ class OtherTools:
                },
            },
            required=["name", "items"]),
-
-        fn("list_product_categories",
-           "List all product categories in the catalog. Use this for booth setup — "
-           "much faster than list_products for large catalogs.",
-           {}),
 
         fn("create_booth_from_categories",
            "Create a booth session with ALL products from the specified categories at their catalog prices. "

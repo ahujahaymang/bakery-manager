@@ -186,6 +186,7 @@ async def create_session(
                         session_id=session.session_id,
                         variant_id=variant.variant_id,
                         booth_price=Decimal(str(item["booth_price"])),
+                        stock_qty=None,
                     )
                     added += 1
             else:
@@ -198,6 +199,7 @@ async def create_session(
                     session_id=session.session_id,
                     variant_id=UUID(str(vid)),
                     booth_price=Decimal(str(price)),
+                    stock_qty=None,
                 )
                 added += 1
         except Exception as e:
