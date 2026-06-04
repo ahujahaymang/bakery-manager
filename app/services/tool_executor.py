@@ -549,7 +549,7 @@ class ToolExecutor:
     # ── Booth ───────────────────────────────────────────────────────────────
 
     async def _tool_record_expense(self, args):
-        """Record a purchase expense."""
+        """Record any business expense."""
         from app.models import PurchaseExpense
         from datetime import date as date_type
         import uuid as uuid_mod
@@ -560,30 +560,47 @@ class ToolExecutor:
         except (ValueError, TypeError):
             expense_date = date_type.today()
 
+        category = args.get("category", "other")
+        if category not in PurchaseExpense.CATEGORIES:
+            category = "other"
+
+        is_capital = str(args.get("is_capital", False)).lower() == "true"
+
         expense = PurchaseExpense(
             expense_id=uuid_mod.uuid4(),
             tenant_id=self.tenant_id,
             amount=Decimal(str(args["amount"])),
             vendor_name=args.get("vendor_name"),
             expense_date=expense_date,
+            category=category,
+            is_capital="true" if is_capital else "false",
+            description=args.get("description"),
             notes=args.get("notes"),
         )
         self.db.add(expense)
         self.db.commit()
-        return (
-            f"✅ Expense recorded: ₹{expense.amount:.2f} on {expense_date}"
-            + (f" from {expense.vendor_name}" if expense.vendor_name else "")
-        )
+
+        parts = [f"✅ Expense recorded: ₹{expense.amount:.2f}"]
+        parts.append(f"Category: {category}")
+        if expense.description:
+            parts.append(f"Item: {expense.description}")
+        if expense.vendor_name:
+            parts.append(f"From: {expense.vendor_name}")
+        parts.append(f"Date: {expense_date}")
+        if is_capital:
+            parts.append("📦 Logged as capital asset")
+        return "\n".join(parts)
 
     async def _tool_list_expenses(self, args):
-        """List purchase expenses with optional date filter."""
+        """List business expenses with optional filters."""
         from app.models import PurchaseExpense
         from datetime import date as date_type
-        import sqlalchemy as sa
 
         query = self.db.query(PurchaseExpense).filter(
             PurchaseExpense.tenant_id == self.tenant_id
         )
+
+        # Date filters
         start = args.get("start_date")
         end = args.get("end_date")
         if start:
@@ -597,18 +614,46 @@ class ToolExecutor:
             except ValueError:
                 pass
 
+        # Category filter
+        category = args.get("category")
+        if category:
+            query = query.filter(PurchaseExpense.category == category)
+
+        # Capital only filter
+        if args.get("capital_only"):
+            query = query.filter(PurchaseExpense.is_capital == "true")
+
         expenses = query.order_by(PurchaseExpense.expense_date.desc()).all()
         if not expenses:
-            return "No purchase expenses recorded yet."
+            return "No expenses recorded yet."
 
         total = sum(e.amount for e in expenses)
-        lines = [f"*Purchase Expenses* — Total: ₹{total:.2f}\n"]
+
+        # Group by category for summary
+        by_cat = {}
         for e in expenses:
-            line = f"• {e.expense_date} — ₹{e.amount:.2f}"
+            cat = e.category or "other"
+            by_cat[cat] = by_cat.get(cat, Decimal("0")) + e.amount
+
+        lines = [f"*Expenses* — Total: ₹{total:.2f}\n"]
+
+        # Category breakdown
+        if len(by_cat) > 1:
+            lines.append("*By category:*")
+            for cat, amt in sorted(by_cat.items(), key=lambda x: -x[1]):
+                lines.append(f"  {cat}: ₹{amt:.2f}")
+            lines.append("")
+
+        # Individual entries
+        for e in expenses:
+            label = e.description or e.notes or ""
+            line = f"• {e.expense_date} — ₹{e.amount:.2f} [{e.category}]"
+            if label:
+                line += f" — {label[:60]}"
             if e.vendor_name:
                 line += f" ({e.vendor_name})"
-            if e.notes:
-                line += f"\n  _{e.notes[:80]}_"
+            if e.is_capital == "true":
+                line += " 📦"
             lines.append(line)
         return "\n".join(lines)
 

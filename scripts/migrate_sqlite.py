@@ -144,12 +144,27 @@ for db in DBS:
             amount NUMERIC(10,2) NOT NULL,
             vendor_name TEXT,
             expense_date DATE NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            is_capital TEXT NOT NULL DEFAULT 'false',
+            description TEXT,
             notes TEXT,
             created_at DATETIME NOT NULL,
             FOREIGN KEY(tenant_id) REFERENCES tenants(tenant_id)
         )
     """):
         print("  + table: purchase_expenses")
+    else:
+        # Table exists — add new columns if missing
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(purchase_expenses)").fetchall()]
+        if "category" not in cols:
+            conn.execute("ALTER TABLE purchase_expenses ADD COLUMN category TEXT NOT NULL DEFAULT 'other'")
+            print("  + purchase_expenses.category")
+        if "is_capital" not in cols:
+            conn.execute("ALTER TABLE purchase_expenses ADD COLUMN is_capital TEXT NOT NULL DEFAULT 'false'")
+            print("  + purchase_expenses.is_capital")
+        if "description" not in cols:
+            conn.execute("ALTER TABLE purchase_expenses ADD COLUMN description TEXT")
+            print("  + purchase_expenses.description")
 
     conn.commit()
     conn.close()

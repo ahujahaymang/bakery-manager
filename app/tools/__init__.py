@@ -94,6 +94,15 @@ Booth / exhibition mode rules:
 - When the owner asks for the booth link, call get_booth_url
 - When the owner asks how much they sold, call get_booth_session_summary
 - To close the session after the event, call end_booth_session
+
+Expense rules:
+- record_expense covers ANY business spend — not just ingredient receipts
+- categories: ingredients | packaging | equipment | utilities | rent | marketing | other
+- is_capital=true for durable assets that last (oven, mixer, display stand, moulds, packaging machine)
+- is_capital=false for running costs (ingredients, electricity bills, packaging rolls)
+- always set description to what was bought: "OTG oven 45L", "electricity bill May", "flour 10kg"
+- trigger record_expense whenever owner mentions buying/paying for something business-related
+- receipt images automatically trigger record_expense with category=ingredients or packaging
 """
 
 __all__ = ["TOOLS", "SYSTEM_PROMPT"]

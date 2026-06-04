@@ -464,19 +464,39 @@ class ProductVariant(Base):
 
 class PurchaseExpense(Base):
     """
-    Records money the owner spent buying ingredients, packaging, or supplies.
+    Records any money the owner spends for the business.
 
-    Created automatically when a purchase receipt image is processed.
-    Enables "how much did I spend on inventory?" queries.
+    Categories:
+      ingredients  — flour, butter, chocolate, etc.
+      packaging    — boxes, ribbons, bags
+      equipment    — one-time capital items (oven, mixer, mould)
+      utilities    — electricity, gas, water
+      rent         — kitchen/storage rent
+      marketing    — ads, flyers, photoshoots
+      other        — anything that doesn't fit above
+
+    is_capital = True for durable assets (equipment) the owner wants to
+    track separately from running costs.
+
+    Created automatically from receipt images, or manually via the agent.
     """
     __tablename__ = "purchase_expenses"
+
+    # Valid categories — enforced at the tool level, stored as plain string
+    CATEGORIES = [
+        "ingredients", "packaging", "equipment",
+        "utilities", "rent", "marketing", "other",
+    ]
 
     expense_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     amount = Column(Numeric(10, 2), nullable=False)
     vendor_name = Column(String, nullable=True)       # shop/vendor name from receipt
     expense_date = Column(Date, nullable=False)        # date from receipt (or today)
-    notes = Column(Text, nullable=True)               # raw items list or description
+    category = Column(String, nullable=False, default="other")  # see CATEGORIES above
+    is_capital = Column(String, nullable=False, default="false")  # "true"/"false" (SQLite safe)
+    description = Column(String, nullable=True)       # human-readable: "OTG oven 45L", "flour 10kg"
+    notes = Column(Text, nullable=True)               # raw items / extra detail
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships
