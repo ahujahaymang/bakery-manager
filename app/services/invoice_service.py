@@ -36,6 +36,9 @@ class InvoiceData:
     amount_paid: Decimal
     amount_due: Decimal
     currency: str = "Rs."
+    tax_rate: Decimal = Decimal("0")     # e.g. Decimal("5") for 5% GST
+    tax_label: str = ""                  # e.g. "GST (5%)"
+    tax_amount: Decimal = Decimal("0")   # computed: subtotal * tax_rate / 100
 
 
 class InvoiceService:
@@ -160,6 +163,10 @@ class InvoiceService:
             y -= row_h
 
         total_row("Subtotal",     data.subtotal)
+        if data.tax_amount and data.tax_amount > 0:
+            total_row(data.tax_label or f"Tax ({data.tax_rate}%)", data.tax_amount)
+            grand_total = data.subtotal + data.tax_amount
+            total_row("Grand Total",  grand_total, bold=True)
         total_row("Amount Paid",  data.amount_paid)
         total_row("AMOUNT DUE",   data.amount_due, bold=True, highlight=True)
 
@@ -209,6 +216,8 @@ class InvoiceService:
         order_id: UUID,
         business_name: str,
         currency: str = "Rs.",
+        tax_rate: Decimal = Decimal("0"),
+        tax_label: str = "",
     ) -> InvoiceData:
         from app.models import Order, OrderItem, Customer, Payment
 
@@ -235,14 +244,21 @@ class InvoiceService:
             i.quantity * (i.selling_price + (i.customization_charge or Decimal("0")))
             for i in order_items
         )
-        amount_paid  = sum(p.amount for p in payments)
-        amount_due   = subtotal - amount_paid
+
+        # Tax calculation
+        tax_amount = (subtotal * tax_rate / 100).quantize(Decimal("0.01")) if tax_rate else Decimal("0")
+        grand_total = subtotal + tax_amount
+
+        amount_paid = sum(p.amount for p in payments)
+        amount_due  = grand_total - amount_paid
+
+        if not tax_label and tax_rate:
+            tax_label = f"GST ({tax_rate}%)"
 
         items = [
             InvoiceItem(
                 description=item.recipe_name,
                 quantity=item.quantity,
-                # Combined price: customization folded into unit price, not shown separately
                 unit_price=item.selling_price + (item.customization_charge or Decimal("0")),
                 total=item.quantity * (item.selling_price + (item.customization_charge or Decimal("0"))),
             )
@@ -261,4 +277,7 @@ class InvoiceService:
             amount_paid=amount_paid,
             amount_due=amount_due,
             currency=currency,
+            tax_rate=tax_rate,
+            tax_label=tax_label,
+            tax_amount=tax_amount,
         )
