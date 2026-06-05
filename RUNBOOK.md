@@ -3,6 +3,7 @@
 Quick reference for deploying, monitoring, and recovering the production bot.
 
 **Production instance:** `i-0ff48b32abce4a930` (us-east-1)
+**Domain:** `https://kitchenos.info`
 **Service name:** `kitchenos`
 **App directory:** `/opt/kitchenos`
 
