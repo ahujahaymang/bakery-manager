@@ -284,6 +284,7 @@ async def get_session_orders(
     return {"orders": result, "session_name": session.name}
 
 
+@router.post("/{tenant_id}/api/session/end")
 async def end_session(tenant_id: str, ctx=Depends(_get_tenant_db)) -> Dict[str, Any]:
     """End the active booth session."""
     db, tid = ctx

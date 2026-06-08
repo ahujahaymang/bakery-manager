@@ -11,13 +11,11 @@ function openCheckout() {
   itemExtras = {};
   const lines = document.getElementById("order-lines");
   lines.innerHTML = "";
-  let subtotal = 0;
 
   for (const [vid, qty] of Object.entries(cart)) {
     const item = window.session.items.find(i => i.variant_id === vid);
     if (!item) continue;
     const lineTotal = item.booth_price * qty;
-    subtotal += lineTotal;
 
     const div = document.createElement("div");
     div.className = "order-line-group";
@@ -26,8 +24,8 @@ function openCheckout() {
         <span>${esc(item.product_name)} ${esc(item.variant_label)} × ${qty}</span>
         <span>₹${fmt(lineTotal)}</span>
       </div>
-      <div class="extra-row" id="extra-row-${vid}">
-        <input type="text" class="extra-note-input" placeholder="Add note (e.g. fondant, custom box)"
+      <div class="extra-row">
+        <input type="text" class="extra-note-input" placeholder="Note (e.g. fondant, custom box)"
           id="extra-note-${vid}" oninput="updateExtra('${vid}')">
         <div class="extra-charge-wrap">
           <span class="extra-plus">+₹</span>
@@ -39,32 +37,9 @@ function openCheckout() {
     lines.appendChild(div);
   }
 
-  // Subtotal line (will be updated when extras change)
-  const subtotalDiv = document.createElement("div");
-  subtotalDiv.className = "order-line";
-  subtotalDiv.id = "order-subtotal";
-  subtotalDiv.innerHTML = `<span>Subtotal</span><span id="subtotal-val">₹${fmt(subtotal)}</span>`;
-  lines.appendChild(subtotalDiv);
-
-  // GST row
-  const gstDiv = document.createElement("div");
-  gstDiv.className = "order-line gst-row";
-  gstDiv.innerHTML = `
-    <span>GST</span>
-    <div class="gst-input-wrap">
-      <input type="number" id="gst-rate-input" min="0" max="100" step="0.5"
-        placeholder="0" style="width:55px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;text-align:right"
-        oninput="updateOrderTotal()"> %
-    </div>
-  `;
-  lines.appendChild(gstDiv);
-
-  // Total line
-  const totalDiv = document.createElement("div");
-  totalDiv.className = "order-line total";
-  totalDiv.id = "order-total-line";
-  totalDiv.innerHTML = `<span>Total</span><span id="order-total-val">₹${fmt(subtotal)}</span>`;
-  lines.appendChild(totalDiv);
+  // Reset GST and total
+  document.getElementById("gst-rate-input").value = "";
+  updateOrderTotal();
 
   document.getElementById("customer-name-input").value = "";
   selectPayment("cash");
@@ -92,10 +67,11 @@ function updateOrderTotal() {
   const gstAmt = subtotal * gstRate / 100;
   const total = subtotal + gstAmt;
 
-  const stEl = document.getElementById("subtotal-val");
-  if (stEl) stEl.textContent = `₹${fmt(subtotal)}`;
   const totEl = document.getElementById("order-total-val");
-  if (totEl) totEl.textContent = `₹${fmt(total)}`;
+  if (totEl) {
+    const gstLabel = gstRate > 0 ? ` (incl. ${gstRate}% GST)` : "";
+    totEl.textContent = `₹${fmt(total)}${gstLabel}`;
+  }
 }
 
 function closeCheckout() {

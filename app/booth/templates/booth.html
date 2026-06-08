@@ -120,6 +120,21 @@
   <div id="checkout-sheet">
     <h2>Order Summary</h2>
     <div id="order-lines"></div>
+
+    <!-- GST — always visible, outside the scrollable items list -->
+    <div class="checkout-row gst-row">
+      <span>GST %</span>
+      <div class="gst-input-wrap">
+        <input type="number" id="gst-rate-input" min="0" max="100" step="0.5"
+          placeholder="0" oninput="updateOrderTotal()">
+        <span class="gst-pct">%</span>
+      </div>
+    </div>
+    <div class="checkout-row total-row">
+      <span>Total</span>
+      <span id="order-total-val">₹0</span>
+    </div>
+
     <div class="section-label">Customer name (optional)</div>
     <input id="customer-name-input" type="text" placeholder="Walk-in Customer">
     <div class="section-label">Payment method</div>

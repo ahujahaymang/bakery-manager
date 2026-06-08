@@ -609,12 +609,35 @@ class BoothService:
     def _resolve_customer(self, customer_name: Optional[str]) -> Customer:
         """
         Find or create a customer for a booth sale.
-        If no name given, use the shared Walk-in Customer record.
+        - No name → reuse/create the single shared Walk-in Customer record.
+        - Named customer → find by name, or create with a unique phone so they
+          don't collide with the walk-in record.
         """
         name = (customer_name or "").strip() or WALK_IN_NAME
-        phone = WALK_IN_PHONE if name == WALK_IN_NAME else "0000000000"
+        is_walkin = (name == WALK_IN_NAME)
 
-        # Try to find by name (case-insensitive)
+        if is_walkin:
+            # Reuse or create the single shared walk-in record
+            customer = (
+                self.db.query(Customer)
+                .filter(
+                    Customer.tenant_id == self.tenant_id,
+                    Customer.phone == WALK_IN_PHONE,
+                )
+                .first()
+            )
+            if customer:
+                return customer
+            customer = Customer(
+                tenant_id=self.tenant_id,
+                name=WALK_IN_NAME,
+                phone=WALK_IN_PHONE,
+            )
+            self.db.add(customer)
+            self.db.flush()
+            return customer
+
+        # Named customer — find by exact name (case-insensitive)
         customer = (
             self.db.query(Customer)
             .filter(
@@ -626,23 +649,14 @@ class BoothService:
         if customer:
             return customer
 
-        # Create new customer
-        # For walk-in, reuse the single walk-in record (unique phone constraint)
-        existing_walkin = (
-            self.db.query(Customer)
-            .filter(
-                Customer.tenant_id == self.tenant_id,
-                Customer.phone == WALK_IN_PHONE,
-            )
-            .first()
-        )
-        if existing_walkin:
-            return existing_walkin
-
+        # Create new named customer — use a unique placeholder phone so they
+        # don't collide with the walk-in record
+        import uuid as _uuid
+        unique_phone = f"REG-{str(_uuid.uuid4())[:8].upper()}"
         customer = Customer(
             tenant_id=self.tenant_id,
             name=name,
-            phone=phone,
+            phone=unique_phone,
         )
         self.db.add(customer)
         self.db.flush()

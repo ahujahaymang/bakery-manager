@@ -268,8 +268,11 @@ header .meta strong { font-size: .9rem; opacity: 1; display: block; }
 @media print {
   @page { size: 80mm auto; margin: 4mm; }
   body { background: #fff; }
-  header, #cart-bar, .receipt-actions, #checkout-overlay, #qr-overlay { display: none !important; }
-  #receipt-screen { padding: 0; }
+  /* Hide everything except the receipt content */
+  header, #cart-bar, .receipt-actions, #checkout-overlay, #qr-overlay,
+  #sell-screen, #setup-screen, #orders-screen, #toast { display: none !important; }
+  /* Show receipt screen without padding/chrome */
+  #receipt-screen { display: block !important; padding: 0; }
   #receipt-box { box-shadow: none; border-radius: 0; max-width: 100%; }
 }
 
@@ -357,3 +360,28 @@ header .meta strong { font-size: .9rem; opacity: 1; display: block; }
 #receipt-box .r-extra {
   font-size: .8rem; color: var(--muted); padding-left: 12px;
 }
+
+/* ── Static checkout rows (GST + Total) ──────────────────────── */
+.checkout-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 0;
+}
+.checkout-row.gst-row {
+  border-top: 1px solid var(--border);
+  margin-top: 4px; padding-top: 10px;
+  font-weight: 600;
+}
+.checkout-row.total-row {
+  font-size: 1.05rem; font-weight: 700;
+  border-top: 2px solid var(--border);
+  padding-top: 10px; margin-bottom: 8px;
+}
+.gst-input-wrap {
+  display: flex; align-items: center; gap: 4px;
+}
+.gst-input-wrap input {
+  width: 60px; padding: 5px 6px;
+  border: 1px solid var(--border); border-radius: 6px;
+  font-size: .95rem; text-align: right;
+}
+.gst-pct { font-size: .9rem; color: var(--muted); }
