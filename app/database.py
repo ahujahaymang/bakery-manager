@@ -195,6 +195,26 @@ def get_registry_db() -> Generator[Session, None, None]:
         db.close()
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def open_registry_db():
+    """
+    Context manager for the registry DB — eliminates the repeated
+    ``reg_db = next(get_registry_db()); try: ... finally: reg_db.close()`` pattern.
+
+    Usage::
+
+        with open_registry_db() as reg_db:
+            tenant = reg_db.query(Tenant).filter(...).first()
+    """
+    db = next(get_registry_db())
+    try:
+        yield db
+    finally:
+        db.close()
+
+
 def get_db(tenant_id: Optional[UUID] = None) -> Generator[Session, None, None]:
     """
     Yield a session connected to the tenant's business database.

@@ -28,9 +28,9 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://kitchenos.info", "http://localhost:8000"],
     allow_methods=["GET", "POST"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -68,7 +68,36 @@ async def _verify_meta_signature(request: Request) -> bytes:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    """Deep health check: verifies the registry DB is readable."""
+    try:
+        from app.database import open_registry_db
+        from app.models import Tenant
+        with open_registry_db() as db:
+            db.query(Tenant).limit(1).all()
+        return {"status": "ok"}
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {"status": "degraded", "detail": str(e)}
+
+
+@app.get("/metrics")
+async def get_metrics(hours: int = 24, key: str = ""):
+    """
+    Developer observability endpoint.
+
+    Returns LLM cost/usage, active users, errors, latency and top tools
+    for the last N hours (default 24).
+
+    Protected by a simple key check (set METRICS_KEY in .env).
+    Returns 403 if key is wrong, 200 with empty-looking stats if key not configured.
+    """
+    from app.config import settings
+    metrics_key = getattr(settings, "METRICS_KEY", "")
+    if metrics_key and key != metrics_key:
+        raise HTTPException(status_code=403, detail="Invalid metrics key")
+
+    from app.services.metrics_service import metrics
+    return metrics.summary(window_hours=max(1, min(hours, 168)))
 
 
 def register_instagram(instagram_listener):

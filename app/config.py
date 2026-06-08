@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     INSTAGRAM_VERIFY_TOKEN: str = ""
     WEBHOOK_URL: str = ""  # public HTTPS URL of this server (e.g. cloudflare tunnel URL)
 
+    # ── Observability ──────────────────────────────────────────────────────
+    # Simple key to protect the /metrics endpoint. Leave empty to disable auth.
+    METRICS_KEY: str = ""
+
     @property
     def DATABASE_URL(self) -> str:
         if self.DB_ENGINE == "sqlite":

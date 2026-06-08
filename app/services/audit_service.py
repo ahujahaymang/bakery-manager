@@ -9,7 +9,6 @@ from typing import Dict, Any, Optional
 from uuid import UUID
 from datetime import datetime
 from sqlalchemy.orm import Session
-import json
 
 from app.models import AuditLog
 
@@ -81,23 +80,16 @@ class AuditService:
         if record_id is None:
             raise ValueError("Record ID is required")
         
-        # Convert dictionaries to JSON strings for JSONB storage
-        old_values_json = json.dumps(old_values) if old_values else None
-        new_values_json = json.dumps(new_values) if new_values else None
-        
         # Create audit log entry
         audit_log = AuditLog(
             tenant_id=tenant_id,
             table_name=table_name.strip(),
             record_id=record_id,
             operation_type=operation_type,
-            old_values=old_values_json,
-            new_values=new_values_json
+            old_values=old_values,
+            new_values=new_values,
         )
         self.db.add(audit_log)
-        
-        # Commit transaction
         self.db.commit()
         self.db.refresh(audit_log)
-        
         return audit_log

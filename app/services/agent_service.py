@@ -60,6 +60,7 @@ class AgentService:
         user_message: str,
         history: List[Dict],
         tool_executor,
+        tenant_id: str = "unknown",
     ) -> str:
         """
         Process a user message: Plan → Execute → Summarise.
@@ -68,14 +69,19 @@ class AgentService:
             user_message:  The user's latest message
             history:       Previous messages [{role, content}, ...]
             tool_executor: async callable(tool_name, args) -> str
+            tenant_id:     Tenant identifier for metrics (optional)
 
         Returns:
             User-facing response string, or a special marker:
             - "INVOICE_PDF:<filename>:<base64>"
             - "INSTAGRAM_CONNECT_URL:<url>"
         """
+        import time
         from datetime import date
+        from app.services.metrics_service import metrics
+
         today = date.today().isoformat()
+        model = getattr(self.llm_client, "model", settings.LLM_MODEL)
 
         # Build message list: system + filtered history + new user message
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(today=today)}]
@@ -83,16 +89,24 @@ class AgentService:
         messages.append({"role": "user", "content": user_message})
 
         # ── Step 1: Plan ───────────────────────────────────────────────────
-        # Ask the LLM what tools to call (and with what args).
-        # The LLM returns either:
-        #   a) tool_calls — a list of {name, args} to execute
-        #   b) text       — a direct answer (no tools needed)
+        t0 = time.monotonic()
         plan_response = await self.llm_client.call_llm(
             messages=messages,
             temperature=0.3,
             max_tokens=4000,
             tools=TOOLS,
             tool_choice="auto",
+        )
+        plan_latency = (time.monotonic() - t0) * 1000
+
+        usage = plan_response.get("usage", {})
+        metrics.record_llm_call(
+            tenant_id=tenant_id,
+            model=model,
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            latency_ms=plan_latency,
+            call_type="plan",
         )
 
         plan_message = plan_response.get("choices", [{}])[0].get("message", {})
@@ -109,20 +123,17 @@ class AgentService:
         messages.append(plan_message)
 
         # ── Step 2: Execute ────────────────────────────────────────────────
-        # Run all planned tool calls in parallel. No LLM involved.
-        tool_results = await self._execute_parallel(tool_calls, tool_executor)
+        tool_results = await self._execute_parallel(tool_calls, tool_executor, tenant_id)
 
-        # Check for special pass-through results (PDF, Instagram URL, CHOOSE: picker)
+        # Check for special pass-through results
         for _, result in tool_results:
             if isinstance(result, str) and result.startswith("INVOICE_PDF:"):
                 return result
             if isinstance(result, str) and result.startswith("INSTAGRAM_CONNECT_URL:"):
                 return result
             if isinstance(result, str) and "CHOOSE:" in result:
-                # Pass CHOOSE: markers directly — don't let summarise reformat them
                 return result
 
-        # Append all tool results to the message list
         for tool_call_id, result in tool_results:
             messages.append({
                 "role": "tool",
@@ -131,14 +142,24 @@ class AgentService:
             })
 
         # ── Step 3: Summarise ──────────────────────────────────────────────
-        # Ask the LLM to turn the tool results into a user-facing response.
-        # tool_choice="none" prevents it from triggering more tool calls.
+        t1 = time.monotonic()
         summary_response = await self.llm_client.call_llm(
             messages=messages,
             temperature=0.3,
             max_tokens=1500,
             tools=TOOLS,
             tool_choice="none",
+        )
+        summarise_latency = (time.monotonic() - t1) * 1000
+
+        usage2 = summary_response.get("usage", {})
+        metrics.record_llm_call(
+            tenant_id=tenant_id,
+            model=model,
+            input_tokens=usage2.get("prompt_tokens", 0),
+            output_tokens=usage2.get("completion_tokens", 0),
+            latency_ms=summarise_latency,
+            call_type="summarise",
         )
 
         content = summary_response.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -166,11 +187,14 @@ class AgentService:
         self,
         tool_calls: List[Dict],
         tool_executor,
+        tenant_id: str = "unknown",
     ) -> List[tuple]:
         """
         Execute all tool calls concurrently.
         Returns list of (tool_call_id, result_str) in the same order.
         """
+        from app.services.metrics_service import metrics
+
         async def _run_one(tool_call):
             tool_name = tool_call["function"]["name"]
             try:
@@ -179,6 +203,7 @@ class AgentService:
                 args = {}
 
             logger.info(f"Executing: {tool_name}({args})")
+            metrics.record_tool_call(tool_name)
             try:
                 result = await tool_executor(tool_name, args)
             except Exception as e:

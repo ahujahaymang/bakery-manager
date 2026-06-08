@@ -104,15 +104,30 @@ Every transaction is recorded as it happens. Your financial history is always th
 - Photograph a handwritten recipe — KitchenOS reads it and creates it for you
 
 ### Payments
-- Record cash, Paytm, or bank transfer payments
+- Record cash, UPI, Razorpay, or bank transfer payments
 - See full payment history
 - Know exactly who still owes you
 
 ### Invoices
 - Generate a professional PDF invoice for any order
 - Just say *"send invoice to Priya"* — the bot creates and sends it instantly
-- Includes your business name, customer details, itemised list, and amount due
+- Includes itemised list, GST/tax breakdown, and amount due
+- Supports backdated delivery dates for historical orders
 - Currency matches your country (₹ for India, $ for US, £ for UK, etc.)
+
+### Register Mode *(sell at events or daily)*
+- Open your register on any phone browser — no app to install
+- Two modes: regular sales day or a timed event (auto-ends after N days)
+- Tap to add products, checkout in seconds with Cash, UPI, or Razorpay
+- Print thermal receipts or generate PDF invoices with GST
+- View the day's orders in detail
+- Set up directly from the web — pick products, set prices, add custom items
+
+### Expense Tracking
+- Record any business expense: ingredients, packaging, equipment, rent, electricity
+- Mark big purchases as capital assets (oven, mixer, display stand)
+- Filter by category or date range
+- Photograph a purchase receipt — expenses logged automatically
 
 ### Instagram Order Detection *(coming soon)*
 - Connect your Instagram account once — the bot will monitor your DMs automatically
@@ -126,7 +141,7 @@ Every transaction is recorded as it happens. Your financial history is always th
 
 ### Image scanning
 - Photograph a handwritten recipe → it's created automatically
-- Photograph a payment receipt → payment is recorded
+- Photograph a purchase receipt → inventory updated automatically
 - Screenshot a WhatsApp order → order is created
 
 ---

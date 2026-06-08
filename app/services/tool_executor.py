@@ -480,14 +480,7 @@ class ToolExecutor:
     # ── Payments ───────────────────────────────────────────────────────────
 
     async def _tool_record_payment(self, args):
-        from app.services.payment_service import PaymentService
-        from dataclasses import dataclass
-
-        @dataclass
-        class PaymentCreate:
-            order_identifier: str
-            amount: Decimal
-            method: str
+        from app.services.payment_service import PaymentService, PaymentCreate
 
         svc = PaymentService(self.db)
         payment = svc.record_payment(

@@ -1048,12 +1048,29 @@ class RequestHandler:
         - str: a text response to send
         - tuple(bytes, str): PDF bytes and filename to send as a document
         """
+        import time
+        from app.services.metrics_service import metrics
+
         executor = ToolExecutor(db, tenant_id)
-        response = await self.agent.run(
-            user_message=user_message,
-            history=self._load_history(db, tenant_id, chat_id),
-            tool_executor=executor.execute,
-        )
+        t0 = time.monotonic()
+        try:
+            response = await self.agent.run(
+                user_message=user_message,
+                history=self._load_history(db, tenant_id, chat_id),
+                tool_executor=executor.execute,
+                tenant_id=str(tenant_id),
+            )
+        except Exception as e:
+            metrics.record_error(
+                tenant_id=str(tenant_id),
+                error_type=type(e).__name__,
+                message=str(e),
+            )
+            raise
+
+        latency_ms = (time.monotonic() - t0) * 1000
+        metrics.record_request(tenant_id=str(tenant_id), latency_ms=latency_ms)
+
         history_entry = f"{history_label} {user_message}".strip() if history_label else user_message
         self._persist(db, tenant_id, chat_id, "user", history_entry)
 
