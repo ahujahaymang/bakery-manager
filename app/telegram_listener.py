@@ -412,6 +412,14 @@ class TelegramBotListener:
             logger.info("Bot is now listening for messages...")
             if self.backup:
                 self.backup.start()
+
+            # Start daily metrics digest (fires at 02:00 UTC = ~07:30 IST)
+            from app.services.metrics_service import metrics as _metrics
+            await _metrics.start_daily_digest(
+                send_fn=self._send_to_chat,
+                admin_chat_id=settings.ADMIN_CHAT_ID or "",
+            )
+
             await self.application.updater.start_polling()
             try:
                 while True:

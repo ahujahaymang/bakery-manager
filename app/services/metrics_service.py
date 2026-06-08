@@ -262,6 +262,114 @@ class MetricsService:
         }
 
 
+    def daily_digest(self) -> str:
+        """
+        Format a human-readable daily digest for Telegram.
+        Uses the last 24h window.
+        """
+        s = self.summary(window_hours=24)
+        now = datetime.utcnow().strftime("%d %b %Y, %H:%M UTC")
+
+        llm = s["llm"]
+        users = s["users"]
+        reqs = s["requests"]
+        errs = s["errors"]
+        tools = s["tools"]
+
+        # Error line — highlight if any
+        err_line = (
+            f"🔴 *{errs['total']} error(s)*"
+            if errs["total"] > 0
+            else "✅ No errors"
+        )
+        if errs["total"] > 0 and errs["by_type"]:
+            breakdown = ", ".join(f"{t}: {c}" for t, c in list(errs["by_type"].items())[:3])
+            err_line += f" ({breakdown})"
+
+        # Top 3 tools
+        top_tools_str = ""
+        if tools["top"]:
+            top_tools_str = "\n".join(
+                f"  {i+1}. `{t['name']}` × {t['calls']}"
+                for i, t in enumerate(tools["top"][:3])
+            )
+        else:
+            top_tools_str = "  (none)"
+
+        # Cost formatting
+        cost_usd = llm["total_cost_usd"]
+        cost_str = f"${cost_usd:.4f}" if cost_usd < 1 else f"${cost_usd:.2f}"
+        cpu_str = f"${llm['cost_per_active_user_usd']:.4f}"
+
+        return (
+            f"📊 *KitchenOS Daily Digest*\n"
+            f"_{now}_\n\n"
+
+            f"👥 *Users*\n"
+            f"  Active today: {users['active_24h']}  |  This week: {users['active_7d']}\n\n"
+
+            f"💬 *Requests*\n"
+            f"  Total: {reqs['total']}  |  p50: {reqs['latency_p50_ms']}ms  |  p95: {reqs['latency_p95_ms']}ms\n\n"
+
+            f"🤖 *LLM*\n"
+            f"  Calls: {llm['total_calls']}  |  Cost: {cost_str}  |  Per user: {cpu_str}\n"
+            f"  Avg latency: {llm['avg_latency_ms']}ms\n\n"
+
+            f"🛠 *Top tools*\n"
+            f"{top_tools_str}\n\n"
+
+            f"{err_line}\n\n"
+            f"_Uptime: {s['uptime_hours']}h_"
+        )
+
+    async def start_daily_digest(
+        self,
+        send_fn,
+        admin_chat_id: str,
+        hour_utc: int = 2,   # 2 UTC = ~7:30 IST
+    ) -> None:
+        """
+        Start a background task that sends the daily digest to admin at
+        `hour_utc` every day (UTC). Call once at startup.
+
+        Args:
+            send_fn: async callable(chat_id, text) — from AdminNotifier
+            admin_chat_id: Telegram chat ID to send to
+            hour_utc: Hour of day in UTC to send (default 2 = ~7:30 IST)
+        """
+        import asyncio
+        from datetime import timezone
+
+        if not admin_chat_id:
+            logger.info("Daily digest disabled: ADMIN_CHAT_ID not set")
+            return
+
+        async def _loop():
+            while True:
+                now = datetime.now(timezone.utc)
+                # Next fire time: today at hour_utc:00, or tomorrow if already past
+                next_run = now.replace(hour=hour_utc, minute=0, second=0, microsecond=0)
+                if next_run <= now:
+                    next_run = next_run.replace(day=next_run.day + 1)
+                wait_secs = (next_run - now).total_seconds()
+
+                logger.info(
+                    f"Daily digest scheduled in {wait_secs/3600:.1f}h "
+                    f"(next: {next_run.strftime('%Y-%m-%d %H:%M UTC')})"
+                )
+                await asyncio.sleep(wait_secs)
+
+                try:
+                    digest = self.daily_digest()
+                    await send_fn(admin_chat_id, digest)
+                    logger.info("Daily digest sent to admin")
+                except Exception as e:
+                    logger.error(f"Failed to send daily digest: {e}")
+
+        asyncio.create_task(_loop())
+        logger.info(f"Daily digest background task started (fires at {hour_utc:02d}:00 UTC daily)")
+
+
 # ── Module-level singleton ─────────────────────────────────────────────────────
 # Import from here: `from app.services.metrics_service import metrics`
 metrics = MetricsService()

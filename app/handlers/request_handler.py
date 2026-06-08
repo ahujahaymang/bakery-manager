@@ -665,6 +665,9 @@ class RequestHandler:
             return self._handle_trial_command(chat_id, text)
         if text.startswith("/status"):
             return self._handle_status_command(chat_id)
+        if text.startswith("/metrics"):
+            from app.services.metrics_service import metrics as _metrics
+            return _metrics.daily_digest()
 
         # Resolve which tenant the admin is operating as, then open that tenant's DB.
         # This is the single place where tenant resolution and DB opening are coupled,
