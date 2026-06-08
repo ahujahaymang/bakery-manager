@@ -348,20 +348,26 @@ class ConversationMessage(Base):
 
 class BoothSession(Base):
     """
-    A named exhibition/event session during which the owner sells products
-    at a booth. Groups all booth sales so they can be reported on later.
+    A Register Mode session — groups all point-of-sale transactions.
+
+    mode = "regular" : daily register (no fixed end date)
+    mode = "event"   : multi-day event (e.g. Delhi Food Fest, 3 days)
+                       ends_at is set; auto-ended when that time passes.
 
     One active session per tenant at a time (enforced in BoothService).
     ended_at=NULL means the session is still active.
     """
     __tablename__ = "booth_sessions"
 
-    session_id = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
-    tenant_id  = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
-    name       = Column(String, nullable=False)          # e.g. "Pune Food Fest May 2026"
-    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    ended_at   = Column(DateTime, nullable=True)         # NULL = still active
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    session_id    = Column(PortableUUID(), primary_key=True, default=uuid.uuid4)
+    tenant_id     = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    name          = Column(String, nullable=False)
+    mode          = Column(String, nullable=False, default="regular")  # "regular" | "event"
+    duration_days = Column(Integer, nullable=True)   # only for event mode
+    started_at    = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ends_at       = Column(DateTime, nullable=True)  # scheduled end (event mode)
+    ended_at      = Column(DateTime, nullable=True)  # actual end (NULL = still active)
+    created_at    = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     # Relationships
     tenant = relationship("Tenant", back_populates="booth_sessions")

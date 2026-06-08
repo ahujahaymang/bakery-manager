@@ -20,11 +20,13 @@ async function openSetup(editing = false) {
     }
   }
 
-  // Pre-fill session name
+  // Pre-fill session name and mode
   const nameInput = document.getElementById("booth-name-input");
-  if (nameInput && window.session) {
-    nameInput.value = window.session.name;
-  }
+  if (nameInput && window.session) nameInput.value = window.session.name;
+
+  // Restore mode toggle
+  const mode = window.session ? (window.session.mode || "regular") : "regular";
+  setMode(mode);
 
   showScreen("setup");
 
@@ -113,6 +115,19 @@ function updateSetupFooter() {
   document.getElementById("create-booth-btn").disabled = count === 0;
 }
 
+function setMode(mode) {
+  document.querySelectorAll(".mode-btn").forEach(b => {
+    b.classList.toggle("selected", b.dataset.mode === mode);
+  });
+  const eventFields = document.getElementById("event-fields");
+  if (eventFields) eventFields.style.display = mode === "event" ? "block" : "none";
+}
+
+function getMode() {
+  const btn = document.querySelector(".mode-btn.selected");
+  return btn ? btn.dataset.mode : "regular";
+}
+
 function addCustomProduct() {
   const name = document.getElementById("custom-name").value.trim();
   const size = document.getElementById("custom-size").value.trim() || "standard";
@@ -142,7 +157,7 @@ function addCustomProduct() {
 async function createBooth() {
   const btn = document.getElementById("create-booth-btn");
   btn.disabled = true;
-  btn.textContent = "Creating…";
+  btn.textContent = "Opening…";
 
   const sessionName = document.getElementById("booth-name-input").value.trim() ||
     (window.session ? window.session.name : null) ||
@@ -166,19 +181,24 @@ async function createBooth() {
   if (allItems.length === 0) {
     showToast("Select at least one product");
     btn.disabled = false;
-    btn.textContent = "Create Booth";
+    btn.textContent = "Open Register";
     return;
   }
 
+  const mode = getMode();
+  const durationDays = mode === "event"
+    ? parseInt(document.getElementById("event-days").value) || 1
+    : null;
+
   try {
-    await createBoothSession(sessionName, allItems);
+    await createBoothSession(sessionName, allItems, mode, durationDays);
     window.session = await fetchActiveSession();
     window.customProducts = [];
 
     if (!window.session || window.session.items.length === 0) {
       showToast("Session created but no items added — check product catalog");
       btn.disabled = false;
-      btn.textContent = "Create Booth";
+      btn.textContent = "Open Register";
       return;
     }
 
@@ -190,18 +210,24 @@ async function createBooth() {
     document.getElementById("session-meta").innerHTML =
       `<div>${esc(window.session.name)}</div><strong id="sale-count">0 sales</strong>`;
 
+    // Show event countdown in header if event mode
+    if (window.session.ends_at) {
+      updateEventCountdown(window.session.ends_at);
+    }
+
     renderGrid();
     showScreen("sell");
-    showToast(`✅ ${sessionName} is live with ${window.session.items.length} products!`);
+    const modeLabel = mode === "event" ? ` (${durationDays}-day event)` : "";
+    showToast(`✅ ${sessionName}${modeLabel} is live with ${window.session.items.length} products!`);
   } catch (e) {
     showToast("Error: " + e.message);
     btn.disabled = false;
-    btn.textContent = editingSession ? "Update Booth" : "Create Booth";
+    btn.textContent = editingSession ? "Update Register" : "Open Register";
   }
 }
 
 async function endBooth() {
-  if (!confirm("End the booth session? This will close sales for today.")) return;
+  if (!confirm("End the register session? This will close sales for today.")) return;
   try {
     const summary = await endBoothSession();
     window.session = null;

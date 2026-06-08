@@ -3,28 +3,29 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Booth — KitchenOS</title>
-<link rel="stylesheet" href="/booth/static/css/booth.css">
+<title>Register — KitchenOS</title>
+<link rel="stylesheet" href="/register/static/css/booth.css">
 </head>
 <body>
 
 <header>
-  <h1>🏪 Booth</h1>
+  <h1>🏪 Register</h1>
   <div class="meta" id="session-meta"></div>
+  <div id="event-countdown" class="event-countdown hidden"></div>
   <div class="header-actions">
     <button class="header-btn" id="header-setup-btn"
       onclick="openSetup(true)" style="display:none">+ Products</button>
     <button class="header-btn danger" id="header-end-btn"
-      onclick="endBooth()" style="display:none">End Booth</button>
+      onclick="endBooth()" style="display:none">End Register</button>
   </div>
 </header>
 
 <!-- ── Sell screen ──────────────────────────────────────────────── -->
 <div id="sell-screen" class="screen active">
   <div id="no-session">
-    <h2>No active booth session</h2>
-    <p>Set one up in Telegram by saying<br><strong>"set up booth"</strong></p>
-    <button class="setup-btn" onclick="openSetup(false)">Set Up Booth Here</button>
+    <h2>No active register session</h2>
+    <p>Set one up in Telegram by saying<br><strong>"set up my register"</strong></p>
+    <button class="setup-btn" onclick="openSetup(false)">Open Register Here</button>
   </div>
   <div id="product-grid" style="display:none"></div>
 </div>
@@ -33,9 +34,29 @@
 <div id="setup-screen" class="screen">
   <div style="padding:12px 12px 0">
     <input id="booth-name-input" type="text"
-      placeholder="Session name (e.g. Delhi Food Fest)"
+      placeholder="Session name (e.g. Regular Day / Delhi Food Fest)"
       style="width:100%;padding:10px 12px;border:1px solid var(--border);
-             border-radius:8px;font-size:.95rem;margin-bottom:4px">
+             border-radius:8px;font-size:.95rem;margin-bottom:10px">
+
+    <!-- Mode toggle -->
+    <div class="mode-toggle">
+      <button class="mode-btn selected" data-mode="regular"
+        onclick="setMode('regular')">🛒 Regular Day</button>
+      <button class="mode-btn" data-mode="event"
+        onclick="setMode('event')">🎪 Event / Booth</button>
+    </div>
+
+    <!-- Event-specific fields -->
+    <div id="event-fields" style="display:none;margin-top:10px">
+      <label style="font-size:.8rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em">
+        Event Duration
+      </label>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+        <input id="event-days" type="number" min="1" max="30" value="1"
+          style="width:70px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;font-size:1rem;text-align:center">
+        <span style="font-size:.9rem;color:var(--muted)">day(s) — session auto-ends after this</span>
+      </div>
+    </div>
   </div>
 
   <!-- Catalog products -->
@@ -61,7 +82,7 @@
   <div class="setup-footer">
     <span class="count" id="setup-count">No products selected</span>
     <button class="create-booth-btn" id="create-booth-btn"
-      onclick="createBooth()" disabled>Create Booth</button>
+      onclick="createBooth()" disabled>Open Register</button>
   </div>
 </div>
 
@@ -69,7 +90,8 @@
 <div id="receipt-screen" class="screen">
   <div id="receipt-box"></div>
   <div class="receipt-actions">
-    <button id="print-btn" onclick="window.print()">🖨 Print</button>
+    <button id="print-btn" onclick="window.print()">🖨 Receipt</button>
+    <button id="invoice-btn" onclick="invoiceOrder()">📄 Invoice</button>
     <button id="new-sale-btn" onclick="newSale()">+ New Sale</button>
     <button id="cancel-sale-btn" onclick="cancelSale()">✕ Cancel Sale</button>
   </div>
@@ -117,13 +139,13 @@
 <script>const TENANT_ID = "{{ tenant_id }}";</script>
 
 <!-- Modules — order matters: api first, then state, then UI, then app -->
-<script src="/booth/static/js/api.js"></script>
-<script src="/booth/static/js/cart.js"></script>
-<script src="/booth/static/js/checkout.js"></script>
-<script src="/booth/static/js/receipt.js"></script>
-<script src="/booth/static/js/qr.js"></script>
-<script src="/booth/static/js/setup.js"></script>
-<script src="/booth/static/js/app.js"></script>
+<script src="/register/static/js/api.js"></script>
+<script src="/register/static/js/cart.js"></script>
+<script src="/register/static/js/checkout.js"></script>
+<script src="/register/static/js/receipt.js"></script>
+<script src="/register/static/js/qr.js"></script>
+<script src="/register/static/js/setup.js"></script>
+<script src="/register/static/js/app.js"></script>
 
 </body>
 </html>

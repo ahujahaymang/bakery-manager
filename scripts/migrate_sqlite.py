@@ -100,13 +100,27 @@ for db in DBS:
             session_id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
             name TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'regular',
+            duration_days INTEGER,
             started_at DATETIME NOT NULL,
+            ends_at DATETIME,
             ended_at DATETIME,
             created_at DATETIME NOT NULL,
             FOREIGN KEY(tenant_id) REFERENCES tenants(tenant_id)
         )
     """):
         print("  + table: booth_sessions")
+    else:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(booth_sessions)").fetchall()]
+        if "mode" not in cols:
+            conn.execute("ALTER TABLE booth_sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'regular'")
+            print("  + booth_sessions.mode")
+        if "duration_days" not in cols:
+            conn.execute("ALTER TABLE booth_sessions ADD COLUMN duration_days INTEGER")
+            print("  + booth_sessions.duration_days")
+        if "ends_at" not in cols:
+            conn.execute("ALTER TABLE booth_sessions ADD COLUMN ends_at DATETIME")
+            print("  + booth_sessions.ends_at")
 
     if create_table_if_missing(conn, "booth_session_items", """
         CREATE TABLE booth_session_items (

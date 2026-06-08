@@ -89,13 +89,15 @@ def register_booth():
     """
     from pathlib import Path
     from fastapi.staticfiles import StaticFiles
-    from app.booth.router import router as booth_router
+    from app.booth.router import router as booth_router, booth_alias
     from app.booth.razorpay_router import router as razorpay_router
 
-    # Serve booth static files (CSS, JS)
+    # Serve register static files (CSS, JS)
     static_dir = Path(__file__).parent / "booth" / "static"
-    app.mount("/booth/static", StaticFiles(directory=str(static_dir)), name="booth-static")
+    app.mount("/register/static", StaticFiles(directory=str(static_dir)), name="register-static")
+    app.mount("/booth/static", StaticFiles(directory=str(static_dir)), name="booth-static-alias")
 
     app.include_router(booth_router)
+    app.include_router(booth_alias)
     app.include_router(razorpay_router)
-    logger.info("Booth routes registered at /booth/{tenant_id}")
+    logger.info("Register routes registered at /register/{tenant_id}")

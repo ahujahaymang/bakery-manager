@@ -706,7 +706,11 @@ class ToolExecutor:
         if existing:
             booth_svc.end_session(existing.session_id)
 
-        session = booth_svc.start_session(session_name)
+        session = booth_svc.start_session(
+            session_name,
+            mode=args.get("mode", "regular"),
+            duration_days=args.get("duration_days"),
+        )
 
         added = 0
         errors = []
@@ -724,13 +728,13 @@ class ToolExecutor:
                     errors.append(f"{product.name}: {e}")
 
         booth_url = (
-            f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}"
+            f"{settings.WEBHOOK_URL}/register/{self.tenant_id}"
             if settings.WEBHOOK_URL
-            else f"http://localhost:8000/booth/{self.tenant_id}"
+            else f"http://localhost:8000/register/{self.tenant_id}"
         )
 
         lines = [
-            f"✅ Booth *{session_name}* is ready with {added} product variant(s).",
+            f"✅ Register *{session_name}* is ready with {added} product variant(s).",
             f"\n🏪 Open on your phone to select products and start selling:\n{booth_url}",
         ]
         if errors:
@@ -744,7 +748,11 @@ class ToolExecutor:
         from uuid import UUID
 
         svc = BoothService(self.db, self.tenant_id)
-        session = svc.start_session(args["name"])
+        session = svc.start_session(
+            args["name"],
+            mode=args.get("mode", "regular"),
+            duration_days=args.get("duration_days"),
+        )
 
         # Add items
         added = []
@@ -762,12 +770,12 @@ class ToolExecutor:
             except Exception as e:
                 errors.append(str(e))
 
-        booth_url = f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}" if settings.WEBHOOK_URL else \
-                    f"http://localhost:8000/booth/{self.tenant_id}"
+        booth_url = f"{settings.WEBHOOK_URL}/register/{self.tenant_id}" if settings.WEBHOOK_URL else \
+                    f"http://localhost:8000/register/{self.tenant_id}"
 
         lines = [
-            f"✅ Booth session '{session.name}' created with {len(added)} product(s).",
-            f"\n🏪 Open your booth on any device:\n{booth_url}",
+            f"✅ Register session '{session.name}' created with {len(added)} product(s).",
+            f"\n🏪 Open your register on any device:\n{booth_url}",
             "\nBookmark it — the link never changes.",
         ]
         if errors:
@@ -835,16 +843,16 @@ class ToolExecutor:
     async def _tool_get_booth_url(self, args):
         from app.config import settings
         if settings.WEBHOOK_URL:
-            url = f"{settings.WEBHOOK_URL}/booth/{self.tenant_id}"
+            url = f"{settings.WEBHOOK_URL}/register/{self.tenant_id}"
         else:
-            url = f"http://localhost:8000/booth/{self.tenant_id}"
+            url = f"http://localhost:8000/register/{self.tenant_id}"
 
         from app.booth.booth_service import BoothService
         svc = BoothService(self.db, self.tenant_id)
         session = svc.get_active_session()
         if session:
-            return f"🏪 Your booth is live ({session.name}):\n{url}"
-        return f"🏪 Your booth URL:\n{url}\n\nNo active session — say 'set up booth' to create one."
+            return f"🏪 Your register is live ({session.name}):\n{url}"
+        return f"🏪 Your register URL:\n{url}\n\nNo active session — say 'set up register' to create one."
 
     async def _tool_list_booth_sessions(self, args):
         from app.booth.booth_service import BoothService

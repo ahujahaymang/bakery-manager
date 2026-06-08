@@ -58,14 +58,18 @@ class OtherTools:
         # ── Booth ──────────────────────────────────────────────────────────
 
         fn("create_booth_session",
-           "Create a new exhibition booth session. "
+           "Create a new Register Mode session. "
            "Ask for the event name, then call create_booth_from_categories with categories=['all']. "
            "Do NOT ask about categories or products — the web app handles product selection.",
            {
-               "name": str_prop("Event name, e.g. 'Pune Food Fest May 2026'"),
+               "name": str_prop("Session name, e.g. 'Pune Food Fest May 2026' or 'Regular Day'"),
+               "mode": {"type": "string", "enum": ["regular", "event"],
+                        "description": "'regular' for normal day sales, 'event' for a timed booth event"},
+               "duration_days": {"type": "integer",
+                                 "description": "Number of days the event runs (only for mode='event')"},
                "items": {
                    "type": "array",
-                   "description": "Products to sell at the booth",
+                   "description": "Products to sell (leave empty — web app handles selection)",
                    "items": {
                        "type": "object",
                        "properties": {
@@ -77,18 +81,24 @@ class OtherTools:
                    },
                },
            },
-           required=["name", "items"]),
+           required=["name"]),
 
         fn("create_booth_from_categories",
-           "Create a booth session with ALL products from the specified categories at their catalog prices. "
-           "Use this after the owner picks categories — no need to list individual products.",
+           "Create a Register Mode session with ALL products from the specified categories at catalog prices. "
+           "Always use categories=['all'] unless owner specifies particular categories. "
+           "For events, pass mode='event' and duration_days. "
+           "The web app URL is sent to the owner — they select/adjust products there.",
            {
-               "name": str_prop("Event name"),
+               "name": str_prop("Session name, e.g. 'Pune Food Fest' or 'Regular Day'"),
                "categories": {
                    "type": "array",
                    "items": {"type": "string"},
-                   "description": "Category names to include, e.g. ['Gourmet Cookies', 'Desserts']"
+                   "description": "Category names to include. Use ['all'] to include everything."
                },
+               "mode": {"type": "string", "enum": ["regular", "event"],
+                        "description": "'regular' for a normal sales day, 'event' for a timed booth"},
+               "duration_days": {"type": "integer",
+                                 "description": "Number of days the event lasts (only for mode='event')"},
            },
            required=["name", "categories"]),
 

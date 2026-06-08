@@ -33,15 +33,54 @@ async function boot() {
   document.getElementById("session-meta").innerHTML =
     `<div>${esc(window.session.name)}</div><strong id="sale-count">0 sales</strong>`;
 
+  // Show event countdown if event session
+  if (window.session.ends_at) {
+    updateEventCountdown(window.session.ends_at);
+  }
+
   // Fetch business name for receipts
   try {
     const info = await apiGet("/info");
-    window.businessName = info.business_name || "Booth";
+    window.businessName = info.business_name || "Register";
   } catch (e) {
-    window.businessName = "Booth";
+    window.businessName = "Register";
   }
 
   renderGrid();
+}
+
+// ── Event countdown ────────────────────────────────────────────────────────
+function updateEventCountdown(endsAtIso) {
+  const el = document.getElementById("event-countdown");
+  if (!el) return;
+
+  const endsAt = new Date(endsAtIso);
+
+  function tick() {
+    const now = new Date();
+    const diff = endsAt - now;
+
+    if (diff <= 0) {
+      el.textContent = "⏰ Event ended";
+      el.classList.remove("hidden");
+      return;
+    }
+
+    const days = Math.floor(diff / 86400000);
+    const hours = Math.floor((diff % 86400000) / 3600000);
+    const mins = Math.floor((diff % 3600000) / 60000);
+
+    let label = "";
+    if (days > 0) label = `🎪 ${days}d ${hours}h left`;
+    else if (hours > 0) label = `🎪 ${hours}h ${mins}m left`;
+    else label = `🎪 ${mins}m left`;
+
+    el.textContent = label;
+    el.classList.remove("hidden");
+  }
+
+  tick();
+  setInterval(tick, 60000); // update every minute
 }
 
 // ── Screen switching ───────────────────────────────────────────────────────

@@ -115,15 +115,23 @@ class BoothService:
 
     # ── Session lifecycle ──────────────────────────────────────────────────
 
-    def start_session(self, name: str) -> BoothSession:
+    def start_session(
+        self,
+        name: str,
+        mode: str = "regular",
+        duration_days: int = None,
+    ) -> BoothSession:
         """
-        Create a new booth session.
+        Create a new Register Mode session.
 
-        Raises ValueError if a session is already active (one at a time).
+        mode="regular"  : open-ended, owner ends manually
+        mode="event"    : fixed-duration; ends_at computed from duration_days
         """
         name = name.strip()
         if not name:
             raise ValueError("Session name is required")
+        if mode not in ("regular", "event"):
+            mode = "regular"
 
         active = self.get_active_session()
         if active:
@@ -132,17 +140,41 @@ class BoothService:
                 "End it first before starting a new one."
             )
 
+        now = datetime.utcnow()
+        ends_at = None
+        if mode == "event" and duration_days and duration_days > 0:
+            from datetime import timedelta
+            # ends at midnight on the last day (end of day N)
+            ends_at = now.replace(hour=23, minute=59, second=59) + timedelta(days=duration_days - 1)
+
         session = BoothSession(
             tenant_id=self.tenant_id,
             name=name,
-            started_at=datetime.utcnow(),
-            created_at=datetime.utcnow(),
+            mode=mode,
+            duration_days=duration_days,
+            started_at=now,
+            ends_at=ends_at,
+            created_at=now,
         )
         self.db.add(session)
         self.db.commit()
         self.db.refresh(session)
-        logger.info(f"Booth session started: {session.session_id} ({name})")
+        logger.info(f"Register session started: {session.session_id} ({name}, mode={mode})")
         return session
+
+    def auto_end_if_expired(self) -> bool:
+        """
+        Check if the active session has passed its ends_at time.
+        If so, end it automatically. Returns True if ended.
+        """
+        session = self.get_active_session()
+        if not session or not session.ends_at:
+            return False
+        if datetime.utcnow() >= session.ends_at:
+            self.end_session(session.session_id)
+            logger.info(f"Register session auto-ended: {session.session_id}")
+            return True
+        return False
 
     def end_session(self, session_id: UUID) -> BoothSession:
         """Close an active session. Returns the closed session."""

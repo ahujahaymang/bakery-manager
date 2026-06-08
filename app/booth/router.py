@@ -32,7 +32,10 @@ from app.models import Order, OrderItem, Payment, Tenant
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/booth", tags=["booth"])
+router = APIRouter(prefix="/register", tags=["register"])
+
+# Keep /booth as an alias for backward compatibility
+booth_alias = APIRouter(prefix="/booth", tags=["booth-alias"])
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -86,7 +89,9 @@ class CheckoutRequest(BaseModel):
 
 class CreateSessionRequest(BaseModel):
     name: str
-    items: List[Dict[str, Any]]  # [{variant_id, booth_price} or {custom:true, name, size_label, booth_price}]
+    mode: str = "regular"          # "regular" | "event"
+    duration_days: Optional[int] = None
+    items: List[Dict[str, Any]]
 
 
 # ── Static files ───────────────────────────────────────────────────────────────
@@ -158,7 +163,11 @@ async def create_session(
     if existing:
         svc.end_session(existing.session_id)
 
-    session = svc.start_session(body.name)
+    session = svc.start_session(
+        body.name,
+        mode=body.mode,
+        duration_days=body.duration_days,
+    )
     added = 0
     errors = []
 
@@ -232,6 +241,51 @@ async def end_session(tenant_id: str, ctx=Depends(_get_tenant_db)) -> Dict[str, 
     }
 
 
+@router.get("/{tenant_id}/api/invoice/{order_id}")
+async def generate_invoice(
+    tenant_id: str,
+    order_id: str,
+    request: Request,
+    tax_rate: float = 0,
+    ctx=Depends(_get_tenant_db),
+):
+    """Generate a PDF invoice for a register order. Returns base64-encoded PDF."""
+    db, tid = ctx
+    try:
+        oid = UUID(order_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid order_id")
+
+    from app.services.invoice_service import InvoiceService
+    from app.database import get_registry_db
+    from decimal import Decimal as D
+
+    reg_db = next(get_registry_db())
+    try:
+        tenant = reg_db.query(Tenant).filter(Tenant.tenant_id == tid).first()
+        business_name = tenant.business_name if tenant else "My Business"
+        from app.services.tenant_service import TenantService
+        currency = TenantService.currency_for_country(tenant.country or "india") if tenant else "Rs."
+    finally:
+        reg_db.close()
+
+    svc = InvoiceService()
+    try:
+        data = svc.build_invoice_data(
+            db, tid, oid, business_name, currency,
+            tax_rate=D(str(tax_rate)),
+        )
+        pdf_bytes = svc.generate(data)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    import base64
+    return {
+        "filename": f"invoice_{data.invoice_number}.pdf",
+        "data": base64.b64encode(pdf_bytes).decode(),
+    }
+
+
 @router.post("/{tenant_id}/api/cancel/{order_id}")
 async def cancel_order_endpoint(
     tenant_id: str,
@@ -256,18 +310,26 @@ async def cancel_order_endpoint(
     return {"status": "cancelled"}
 
 @router.get("/{tenant_id}", response_class=HTMLResponse)
-async def serve_booth(tenant_id: str, request: Request):
-    """Serve the single-page booth app."""
-    # Validate tenant exists (lightweight check)
+async def serve_register(tenant_id: str, request: Request):
+    """Serve the Register Mode SPA."""
     try:
         UUID(tenant_id)
     except ValueError:
         raise HTTPException(status_code=404, detail="Invalid tenant ID")
-
     return templates.TemplateResponse(
-        request=request,
-        name="booth.html",
-        context={"tenant_id": tenant_id},
+        request=request, name="booth.html", context={"tenant_id": tenant_id},
+    )
+
+
+@booth_alias.get("/{tenant_id}", response_class=HTMLResponse)
+async def serve_booth_alias(tenant_id: str, request: Request):
+    """Backward-compat alias — /booth/{id} → same page as /register/{id}."""
+    try:
+        UUID(tenant_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Invalid tenant ID")
+    return templates.TemplateResponse(
+        request=request, name="booth.html", context={"tenant_id": tenant_id},
     )
 
 
@@ -276,9 +338,13 @@ async def get_active_session(
     tenant_id: str,
     ctx=Depends(_get_tenant_db),
 ) -> Dict[str, Any]:
-    """Return the active session with its items, or null."""
+    """Return the active session with its items, or null. Auto-ends expired event sessions."""
     db, tid = ctx
     svc = BoothService(db, tid)
+
+    # Auto-end if event session has expired
+    svc.auto_end_if_expired()
+
     session = svc.get_active_session()
     if not session:
         return {"session": None}
@@ -288,7 +354,10 @@ async def get_active_session(
         "session": {
             "session_id": str(session.session_id),
             "name": session.name,
+            "mode": session.mode or "regular",
+            "duration_days": session.duration_days,
             "started_at": session.started_at.isoformat(),
+            "ends_at": session.ends_at.isoformat() if session.ends_at else None,
             "items": [
                 {
                     "item_id": str(i.item_id),

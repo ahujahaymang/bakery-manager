@@ -3,7 +3,7 @@
  * All functions return parsed JSON or throw on error.
  */
 
-const API = `/booth/${TENANT_ID}/api`;
+const API = `/register/${TENANT_ID}/api`;
 
 async function apiGet(path) {
   const res = await fetch(`${API}${path}`);
@@ -54,10 +54,14 @@ async function cancelOrder(orderId) {
   return apiPost(`/cancel/${orderId}`, {});
 }
 
-async function createBoothSession(name, items) {
-  return apiPost("/session/create", { name, items });
+async function createBoothSession(name, items, mode = "regular", durationDays = null) {
+  return apiPost("/session/create", { name, items, mode, duration_days: durationDays });
 }
 
 async function endBoothSession() {
   return apiPost("/session/end", {});
+}
+
+async function generateInvoice(orderId, taxRate = 0) {
+  return apiGet(`/invoice/${orderId}?tax_rate=${taxRate}`);
 }

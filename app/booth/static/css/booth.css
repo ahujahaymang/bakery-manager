@@ -272,3 +272,28 @@ header .meta strong { font-size: .9rem; opacity: 1; display: block; }
   #receipt-screen { padding: 0; }
   #receipt-box { box-shadow: none; border-radius: 0; max-width: 100%; }
 }
+
+/* ── Mode toggle ──────────────────────────────────────────────── */
+.mode-toggle {
+  display: flex; gap: 8px; margin-bottom: 4px;
+}
+.mode-btn {
+  flex: 1; padding: 10px 0; border-radius: 10px;
+  border: 2px solid var(--border); background: #fff;
+  font-size: .9rem; font-weight: 600; cursor: pointer;
+  color: var(--muted); transition: border-color .15s, background .15s, color .15s;
+}
+.mode-btn.selected {
+  border-color: var(--accent); background: #fff5f7; color: var(--accent);
+}
+
+/* ── Event countdown in header ───────────────────────────────── */
+.event-countdown {
+  font-size: .75rem; font-weight: 700;
+  background: rgba(232, 68, 95, .25); color: #ffb3be;
+  padding: 3px 10px; border-radius: 12px; white-space: nowrap;
+}
+.event-countdown.hidden { display: none; }
+
+/* ── Invoice button ──────────────────────────────────────────── */
+#invoice-btn { background: var(--orange); color: #fff; }
