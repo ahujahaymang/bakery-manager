@@ -46,6 +46,8 @@ class BoothItemInput:
     """One line in a checkout cart."""
     variant_id: UUID
     quantity: int
+    extra_charge: Decimal = Decimal("0")   # packaging / customization
+    extra_note: Optional[str] = None
 
 
 @dataclass
@@ -54,12 +56,17 @@ class BoothOrderItem:
     variant_label: str
     quantity: int
     unit_price: Decimal
+    extra_charge: Decimal
+    extra_note: Optional[str]
     line_total: Decimal
 
 
 @dataclass
 class BoothOrder:
     order_id: UUID
+    subtotal: Decimal
+    gst_rate: Decimal
+    gst_amount: Decimal
     total_amount: Decimal
     items: List[BoothOrderItem]
     payment_method: str
@@ -320,6 +327,7 @@ class BoothService:
         cart: List[BoothItemInput],
         payment_method: str,          # "cash" | "upi" | "razorpay"
         customer_name: Optional[str] = None,
+        gst_rate: Decimal = Decimal("0"),
     ) -> BoothOrder:
         """
         Process a booth sale atomically:
@@ -380,10 +388,14 @@ class BoothService:
                 "variant": variant,
                 "quantity": cart_item.quantity,
                 "unit_price": session_item.booth_price,
-                "line_total": session_item.booth_price * cart_item.quantity,
+                "extra_charge": cart_item.extra_charge,
+                "extra_note": cart_item.extra_note,
+                "line_total": session_item.booth_price * cart_item.quantity + cart_item.extra_charge,
             })
 
-        total_amount = sum(r["line_total"] for r in resolved)
+        subtotal = sum(r["line_total"] for r in resolved)
+        gst_amount = (subtotal * gst_rate / Decimal("100")).quantize(Decimal("0.01")) if gst_rate else Decimal("0")
+        total_amount = subtotal + gst_amount
 
         # ── Resolve customer ───────────────────────────────────────────────
         customer = self._resolve_customer(customer_name)
@@ -410,7 +422,8 @@ class BoothService:
                 recipe_name=f"{variant.product.name} — {variant.size_label}",
                 quantity=r["quantity"],
                 selling_price=r["unit_price"],
-                customization_charge=Decimal("0"),
+                customization_charge=r["extra_charge"],
+                customization_note=r["extra_note"],
             )
             self.db.add(oi)
             order_items_out.append(BoothOrderItem(
@@ -418,6 +431,8 @@ class BoothService:
                 variant_label=variant.size_label,
                 quantity=r["quantity"],
                 unit_price=r["unit_price"],
+                extra_charge=r["extra_charge"],
+                extra_note=r["extra_note"],
                 line_total=r["line_total"],
             ))
 
@@ -448,6 +463,9 @@ class BoothService:
 
         return BoothOrder(
             order_id=order.order_id,
+            subtotal=subtotal,
+            gst_rate=gst_rate,
+            gst_amount=gst_amount,
             total_amount=total_amount,
             items=order_items_out,
             payment_method=payment_method,

@@ -205,6 +205,7 @@ async function createBooth() {
     // Update header
     document.getElementById("no-session").style.display = "none";
     document.getElementById("product-grid").style.display = "grid";
+    document.getElementById("header-orders-btn").style.display = "inline-block";
     document.getElementById("header-setup-btn").style.display = "inline-block";
     document.getElementById("header-end-btn").style.display = "inline-block";
     document.getElementById("session-meta").innerHTML =

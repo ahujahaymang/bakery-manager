@@ -78,6 +78,8 @@ def _get_tenant_db(tenant_id: str):
 class CheckoutItemSchema(BaseModel):
     variant_id: str
     quantity: int = Field(ge=1)
+    extra_charge: float = 0        # packaging / customization charge
+    extra_note: Optional[str] = None  # note for the extra charge
 
 
 class CheckoutRequest(BaseModel):
@@ -85,6 +87,7 @@ class CheckoutRequest(BaseModel):
     items: List[CheckoutItemSchema]
     payment_method: Literal["cash", "upi", "razorpay"]
     customer_name: Optional[str] = None
+    gst_rate: float = 0            # GST % to apply to the total (e.g. 5 for 5%)
 
 
 class CreateSessionRequest(BaseModel):
@@ -223,7 +226,64 @@ async def create_session(
     }
 
 
-@router.post("/{tenant_id}/api/session/end")
+@router.get("/{tenant_id}/api/session/orders")
+async def get_session_orders(
+    tenant_id: str,
+    ctx=Depends(_get_tenant_db),
+) -> Dict[str, Any]:
+    """Return all orders for the active session."""
+    from app.models import Customer
+    db, tid = ctx
+    svc = BoothService(db, tid)
+    session = svc.get_active_session()
+    if not session:
+        return {"orders": []}
+
+    orders = (
+        db.query(Order)
+        .filter(
+            Order.tenant_id == tid,
+            Order.booth_session_id == session.session_id,
+            Order.status != "cancelled",
+        )
+        .order_by(Order.created_at.desc())
+        .all()
+    )
+
+    result = []
+    for order in orders:
+        # Get customer name
+        customer = db.query(Customer).filter(Customer.customer_id == order.customer_id).first()
+        customer_name = customer.name if customer else "Walk-in"
+
+        order_items = db.query(OrderItem).filter(OrderItem.order_id == order.order_id).all()
+        payment = db.query(Payment).filter(Payment.order_id == order.order_id).first()
+
+        # Compute total from items
+        total = sum(float(oi.quantity * oi.selling_price) + float(oi.customization_charge or 0) for oi in order_items)
+
+        result.append({
+            "order_id": str(order.order_id),
+            "customer_name": customer_name,
+            "created_at": order.created_at.isoformat() if order.created_at else "",
+            "total_amount": total,
+            "payment_method": payment.method if payment else "—",
+            "items": [
+                {
+                    "recipe_name": oi.recipe_name,
+                    "quantity": oi.quantity,
+                    "unit_price": float(oi.selling_price),
+                    "customization_charge": float(oi.customization_charge or 0),
+                    "customization_note": oi.customization_note or "",
+                    "line_total": float(oi.quantity * oi.selling_price) + float(oi.customization_charge or 0),
+                }
+                for oi in order_items
+            ],
+        })
+
+    return {"orders": result, "session_name": session.name}
+
+
 async def end_session(tenant_id: str, ctx=Depends(_get_tenant_db)) -> Dict[str, Any]:
     """End the active booth session."""
     db, tid = ctx
@@ -400,6 +460,8 @@ async def checkout(
             cart.append(BoothItemInput(
                 variant_id=UUID(item.variant_id),
                 quantity=item.quantity,
+                extra_charge=Decimal(str(item.extra_charge or 0)),
+                extra_note=item.extra_note,
             ))
         except ValueError:
             raise HTTPException(status_code=400, detail=f"Invalid variant_id: {item.variant_id}")
@@ -410,6 +472,7 @@ async def checkout(
             cart=cart,
             payment_method=body.payment_method,
             customer_name=body.customer_name,
+            gst_rate=Decimal(str(body.gst_rate or 0)),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -417,6 +480,9 @@ async def checkout(
     response: Dict[str, Any] = {
         "order_id": str(order.order_id),
         "payment_id": str(order.payment_id),
+        "subtotal": float(order.subtotal),
+        "gst_amount": float(order.gst_amount),
+        "gst_rate": float(order.gst_rate),
         "total_amount": float(order.total_amount),
         "payment_method": order.payment_method,
         "items": [
@@ -425,6 +491,8 @@ async def checkout(
                 "variant_label": i.variant_label,
                 "quantity": i.quantity,
                 "unit_price": float(i.unit_price),
+                "extra_charge": float(i.extra_charge),
+                "extra_note": i.extra_note or "",
                 "line_total": float(i.line_total),
             }
             for i in order.items

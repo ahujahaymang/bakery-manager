@@ -17,12 +17,25 @@ function showReceipt(order) {
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
 
-  const itemsHtml = order.items.map(i => `
-    <div class="r-line">
-      <span>${esc(i.product_name)} ${esc(i.variant_label)} ×${i.quantity}</span>
-      <span>₹${fmt(i.line_total)}</span>
-    </div>
-  `).join("");
+  const itemsHtml = order.items.map(i => {
+    let lines = `
+      <div class="r-line">
+        <span>${esc(i.product_name)} ${esc(i.variant_label)} ×${i.quantity}</span>
+        <span>₹${fmt(i.unit_price * i.quantity)}</span>
+      </div>`;
+    if (i.extra_charge > 0) {
+      lines += `
+      <div class="r-line r-extra">
+        <span>  + ${esc(i.extra_note || "Extra")}</span>
+        <span>₹${fmt(i.extra_charge)}</span>
+      </div>`;
+    }
+    return lines;
+  }).join("");
+
+  const gstHtml = (order.gst_amount > 0)
+    ? `<div class="r-line"><span>GST (${order.gst_rate}%)</span><span>₹${fmt(order.gst_amount)}</span></div>`
+    : "";
 
   box.innerHTML = `
     <div class="biz">${esc(window.businessName || "Register")}</div>
@@ -31,6 +44,9 @@ function showReceipt(order) {
     <div class="r-line"><span>Order</span><span>#${order.order_id.slice(0,8).toUpperCase()}</span></div>
     <hr class="divider">
     ${itemsHtml}
+    <hr class="divider">
+    ${order.gst_amount > 0 ? `<div class="r-line"><span>Subtotal</span><span>₹${fmt(order.subtotal)}</span></div>` : ""}
+    ${gstHtml}
     <div class="r-line r-total">
       <span>Total</span><span>₹${fmt(order.total_amount)}</span>
     </div>
@@ -56,13 +72,11 @@ async function invoiceOrder() {
   btn.disabled = true;
   btn.textContent = "Generating…";
 
-  // Ask for GST rate
-  const taxInput = prompt("Enter GST rate % (0 for no tax):", "0");
-  const taxRate = parseFloat(taxInput) || 0;
+  // Use the GST rate from the order itself (already captured at checkout)
+  const taxRate = lastOrder.gst_rate || 0;
 
   try {
     const result = await generateInvoice(lastOrder.order_id, taxRate);
-    // Decode base64 PDF and trigger download
     const byteChars = atob(result.data);
     const byteArray = new Uint8Array(byteChars.length);
     for (let i = 0; i < byteChars.length; i++) {
@@ -93,7 +107,6 @@ async function cancelSale() {
     await cancelOrder(lastOrder.order_id);
     showToast("Sale cancelled");
     lastOrder = null;
-    // Reload session to restore stock
     const s = await fetchActiveSession();
     if (s) { window.session = s; renderGrid(); }
     showScreen("sell");

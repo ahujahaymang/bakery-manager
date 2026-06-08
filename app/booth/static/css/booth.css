@@ -297,3 +297,63 @@ header .meta strong { font-size: .9rem; opacity: 1; display: block; }
 
 /* ── Invoice button ──────────────────────────────────────────── */
 #invoice-btn { background: var(--orange); color: #fff; }
+
+/* ── Orders screen ────────────────────────────────────────────── */
+.orders-header {
+  background: #fff; padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 10;
+}
+.orders-header h2 { font-size: 1rem; margin: 6px 0 4px; }
+.back-btn {
+  background: none; border: none; font-size: .9rem;
+  color: var(--accent); cursor: pointer; padding: 0;
+}
+.orders-summary {
+  font-size: .8rem; color: var(--muted); font-weight: 600;
+}
+#orders-list { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.order-card {
+  background: #fff; border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 12px 14px;
+  font-size: .88rem;
+}
+.order-card-header {
+  display: flex; justify-content: space-between;
+  font-weight: 700; margin-bottom: 6px;
+}
+.order-num { font-size: .9rem; }
+.order-time { font-size: .8rem; color: var(--muted); font-weight: 400; }
+.o-item { color: var(--text); padding: 2px 0; }
+.order-card-footer {
+  display: flex; justify-content: space-between;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+.order-method { font-size: .8rem; color: var(--muted); text-transform: capitalize; }
+.order-total { font-weight: 700; color: var(--accent); }
+
+/* ── Checkout extras & GST ────────────────────────────────────── */
+.order-line-group { margin-bottom: 4px; }
+.extra-row {
+  display: flex; gap: 8px; align-items: center;
+  padding: 4px 0 4px 8px; border-left: 2px solid var(--border);
+  margin-bottom: 6px;
+}
+.extra-note-input {
+  flex: 1; padding: 5px 8px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: .82rem;
+}
+.extra-charge-wrap { display: flex; align-items: center; gap: 2px; white-space: nowrap; }
+.extra-plus { font-size: .82rem; color: var(--muted); }
+.extra-charge-input {
+  width: 58px; padding: 5px 6px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: .82rem; text-align: right;
+}
+.gst-row { align-items: center; }
+.gst-input-wrap { display: flex; align-items: center; gap: 4px; }
+
+/* ── Receipt extra line ──────────────────────────────────────── */
+#receipt-box .r-extra {
+  font-size: .8rem; color: var(--muted); padding-left: 12px;
+}

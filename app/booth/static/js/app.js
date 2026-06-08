@@ -28,6 +28,7 @@ async function boot() {
 
   document.getElementById("no-session").style.display = "none";
   document.getElementById("product-grid").style.display = "grid";
+  document.getElementById("header-orders-btn").style.display = "inline-block";
   document.getElementById("header-setup-btn").style.display = "inline-block";
   document.getElementById("header-end-btn").style.display = "inline-block";
   document.getElementById("session-meta").innerHTML =
@@ -81,6 +82,59 @@ function updateEventCountdown(endsAtIso) {
 
   tick();
   setInterval(tick, 60000); // update every minute
+}
+
+// ── Orders screen ─────────────────────────────────────────────────────────
+async function openOrders() {
+  showScreen("orders");
+  const list = document.getElementById("orders-list");
+  list.innerHTML = `<div style="text-align:center;padding:40px;color:var(--muted)">Loading…</div>`;
+
+  try {
+    const data = await fetchSessionOrders();
+    const orders = data.orders || [];
+
+    document.getElementById("orders-title").textContent =
+      `${esc(data.session_name || "Today")}'s Orders`;
+
+    if (orders.length === 0) {
+      list.innerHTML = `<div style="text-align:center;padding:40px;color:var(--muted)">No orders yet</div>`;
+      document.getElementById("orders-summary").textContent = "";
+      return;
+    }
+
+    const total = orders.reduce((s, o) => s + o.total_amount, 0);
+    document.getElementById("orders-summary").textContent =
+      `${orders.length} order${orders.length !== 1 ? "s" : ""} · ₹${fmt(total)}`;
+
+    list.innerHTML = orders.map((o, idx) => {
+      const time = o.created_at
+        ? new Date(o.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })
+        : "";
+      const itemLines = o.items.map(i => {
+        let line = `<div class="o-item">${esc(i.recipe_name)} ×${i.quantity} — ₹${fmt(i.unit_price * i.quantity)}`;
+        if (i.customization_charge > 0) line += ` + ₹${fmt(i.customization_charge)} (${esc(i.customization_note || "extra")})`;
+        line += `</div>`;
+        return line;
+      }).join("");
+
+      return `
+        <div class="order-card">
+          <div class="order-card-header">
+            <span class="order-num">#${idx + 1} · ${esc(o.customer_name)}</span>
+            <span class="order-time">${time}</span>
+          </div>
+          ${itemLines}
+          <div class="order-card-footer">
+            <span class="order-method">${esc(o.payment_method)}</span>
+            <span class="order-total">₹${fmt(o.total_amount)}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    list.innerHTML = `<div style="text-align:center;padding:40px;color:var(--accent)">${e.message}</div>`;
+  }
 }
 
 // ── Screen switching ───────────────────────────────────────────────────────

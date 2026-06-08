@@ -36,12 +36,13 @@ async function fetchCatalog() {
   return apiGet("/catalog");
 }
 
-async function submitCheckout(sessionId, items, paymentMethod, customerName) {
+async function submitCheckout(sessionId, items, paymentMethod, customerName, gstRate = 0) {
   return apiPost("/checkout", {
     session_id: sessionId,
     items,
     payment_method: paymentMethod,
     customer_name: customerName || null,
+    gst_rate: gstRate,
   });
 }
 
@@ -64,4 +65,8 @@ async function endBoothSession() {
 
 async function generateInvoice(orderId, taxRate = 0) {
   return apiGet(`/invoice/${orderId}?tax_rate=${taxRate}`);
+}
+
+async function fetchSessionOrders() {
+  return apiGet("/session/orders");
 }

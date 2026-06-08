@@ -13,6 +13,8 @@
   <div class="meta" id="session-meta"></div>
   <div id="event-countdown" class="event-countdown hidden"></div>
   <div class="header-actions">
+    <button class="header-btn" id="header-orders-btn"
+      onclick="openOrders()" style="display:none">📋 Orders</button>
     <button class="header-btn" id="header-setup-btn"
       onclick="openSetup(true)" style="display:none">+ Products</button>
     <button class="header-btn danger" id="header-end-btn"
@@ -84,6 +86,16 @@
     <button class="create-booth-btn" id="create-booth-btn"
       onclick="createBooth()" disabled>Open Register</button>
   </div>
+</div>
+
+<!-- ── Orders screen ─────────────────────────────────────────────── -->
+<div id="orders-screen" class="screen">
+  <div class="orders-header">
+    <button class="back-btn" onclick="showScreen('sell')">← Back</button>
+    <h2 id="orders-title">Today's Orders</h2>
+    <div id="orders-summary" class="orders-summary"></div>
+  </div>
+  <div id="orders-list"></div>
 </div>
 
 <!-- ── Receipt screen ───────────────────────────────────────────── -->
