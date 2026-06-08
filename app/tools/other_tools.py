@@ -84,21 +84,23 @@ class OtherTools:
            required=["name"]),
 
         fn("create_booth_from_categories",
-           "Create a Register Mode session with ALL products from the specified categories at catalog prices. "
-           "Always use categories=['all'] unless owner specifies particular categories. "
-           "For events, pass mode='event' and duration_days. "
-           "The web app URL is sent to the owner — they select/adjust products there.",
+           "Open the Register Mode for the owner. "
+           "Call this IMMEDIATELY when the owner says anything like 'setup booth', 'open register', "
+           "'setup my register', 'start selling', 'open booth', etc. "
+           "Do NOT ask for a name, event details, or categories first — just call it with "
+           "name='Register' and categories=['all']. "
+           "The owner configures everything (name, products, mode) on the web app itself.",
            {
-               "name": str_prop("Session name, e.g. 'Pune Food Fest' or 'Regular Day'"),
+               "name": str_prop("Session name — use 'Register' as default, or the event name if owner mentioned one"),
                "categories": {
                    "type": "array",
                    "items": {"type": "string"},
-                   "description": "Category names to include. Use ['all'] to include everything."
+                   "description": "Always use ['all'] unless owner explicitly named specific categories."
                },
                "mode": {"type": "string", "enum": ["regular", "event"],
-                        "description": "'regular' for a normal sales day, 'event' for a timed booth"},
+                        "description": "'regular' by default. Use 'event' only if owner explicitly said it's an event."},
                "duration_days": {"type": "integer",
-                                 "description": "Number of days the event lasts (only for mode='event')"},
+                                 "description": "Only set if owner explicitly said the event duration (e.g. '3-day event')"},
            },
            required=["name", "categories"]),
 
