@@ -81,14 +81,16 @@ export class KitchenOsStack extends cdk.Stack {
     });
 
     // ── Security group ────────────────────────────────────────────────────
-    // No inbound rules — bot uses outbound polling, no public ports needed.
-    // Port 8000 (webhook server) only needs to be open if you have a public domain.
+    // Inbound: ports 80 and 443 for nginx (webhook server + booth UI).
+    // Telegram bot uses outbound polling — no inbound port needed for that.
     const appSg = new ec2.SecurityGroup(this, 'AppSg', {
       vpc,
       securityGroupName: `${prefix}-app-sg`,
-      description: 'KitchenOS app - outbound only',
+      description: 'KitchenOS app',
       allowAllOutbound: true,
     });
+    appSg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(80),  'HTTP  — nginx / Let\'s Encrypt');
+    appSg.addIngressRule(ec2.Peer.anyIpv4(), ec2.Port.tcp(443), 'HTTPS — webhook server + booth UI');
 
     // ── IAM role for EC2 ─────────────────────────────────────────────────
     const role = new iam.Role(this, 'Ec2Role', {
@@ -256,6 +258,9 @@ export class KitchenOsStack extends cdk.Stack {
       `META_APP_ID=$(aws ssm get-parameter --name ${ssmPrefix}/META_APP_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
       `META_APP_SECRET=$(aws ssm get-parameter --name ${ssmPrefix}/META_APP_SECRET --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")`,
       `INSTAGRAM_VERIFY_TOKEN=$(aws ssm get-parameter --name ${ssmPrefix}/INSTAGRAM_VERIFY_TOKEN --query Parameter.Value --output text 2>/dev/null || echo "")`,
+      `WEBHOOK_URL=$(aws ssm get-parameter --name ${ssmPrefix}/WEBHOOK_URL --query Parameter.Value --output text 2>/dev/null || echo "")`,
+      `RAZORPAY_KEY_ID=$(aws ssm get-parameter --name ${ssmPrefix}/RAZORPAY_KEY_ID --query Parameter.Value --output text 2>/dev/null || echo "")`,
+      `RAZORPAY_KEY_SECRET=$(aws ssm get-parameter --name ${ssmPrefix}/RAZORPAY_KEY_SECRET --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")`,
 
       ...(dbEngine === 'rds' ? [
         `DB_PASSWORD=$(aws secretsmanager get-secret-value --secret-id ${prefix}-db-credentials --query SecretString --output text | python3 -c "import sys,json; print(json.load(sys.stdin)['password'])")`,
@@ -273,6 +278,9 @@ export class KitchenOsStack extends cdk.Stack {
       'META_APP_ID=$META_APP_ID',
       'META_APP_SECRET=$META_APP_SECRET',
       'INSTAGRAM_VERIFY_TOKEN=$INSTAGRAM_VERIFY_TOKEN',
+      'WEBHOOK_URL=$WEBHOOK_URL',
+      'RAZORPAY_KEY_ID=$RAZORPAY_KEY_ID',
+      'RAZORPAY_KEY_SECRET=$RAZORPAY_KEY_SECRET',
       ...Object.entries({ ...backupEnv, ...rdsEnv }).map(([k, v]) => `${k}=${v}`),
       ...(dbEngine === 'rds' ? ['DB_PASSWORD=$DB_PASSWORD'] : []),
       'EOF',
@@ -306,9 +314,47 @@ export class KitchenOsStack extends cdk.Stack {
       'systemctl daemon-reload',
       'systemctl enable kitchenos',
       'systemctl start kitchenos',
+
+      // ── nginx + TLS (if WEBHOOK_URL is set) ──────────────────────────
+      // Install nginx and certbot, configure HTTPS reverse proxy to port 8000.
+      // Skipped silently if no domain is configured.
+      'if [ -n "$WEBHOOK_URL" ]; then',
+      '  DOMAIN=$(echo "$WEBHOOK_URL" | sed "s|https\\?://||" | cut -d/ -f1)',
+      '  yum install -y nginx',
+      '  pip3.11 install certbot certbot-nginx',
+      // Write initial nginx config for the domain (HTTP only — certbot will upgrade to HTTPS)
+      '  cat > /etc/nginx/conf.d/kitchenos.conf << NGINXEOF',
+      'server {',
+      '    listen 80;',
+      '    server_name $DOMAIN;',
+      '    location / {',
+      '        proxy_pass http://127.0.0.1:8000;',
+      '        proxy_set_header Host $host;',
+      '        proxy_set_header X-Real-IP $remote_addr;',
+      '        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;',
+      '        proxy_set_header X-Forwarded-Proto $scheme;',
+      '        proxy_read_timeout 120s;',
+      '    }',
+      '}',
+      'NGINXEOF',
+      '  systemctl enable nginx',
+      '  systemctl start nginx',
+      // Obtain TLS cert — requires DNS to already point to this IP
+      '  certbot --nginx -d $DOMAIN --non-interactive --agree-tos -m admin@$DOMAIN --redirect 2>&1 || echo "certbot: cert pending — run manually once DNS is set"',
+      'fi',
     );
 
     // ── EC2 instance (t3.micro — free tier eligible) ──────────────────────
+    //
+    // disableApiTermination is intentionally FALSE here.
+    // The EBS data volume has RemovalPolicy.RETAIN — that's what protects data.
+    // Setting disableApiTermination=true causes CloudFormation to orphan old
+    // instances instead of terminating them when a replacement is needed,
+    // resulting in multiple idle instances running and wasting money.
+    //
+    // User-data changes (e.g. new env vars) are handled by the deploy script
+    // at runtime, not by replacing the instance. Use userDataCausesReplacement=false
+    // to prevent CloudFormation from triggering a new instance on every deploy.
     const instance = new ec2.Instance(this, 'App', {
       instanceName: `${prefix}-app`,
       vpc,
@@ -323,7 +369,7 @@ export class KitchenOsStack extends cdk.Stack {
       securityGroup: appSg,
       role,
       userData,
-      disableApiTermination: true,
+      userDataCausesReplacement: false,
       blockDevices: [{
         deviceName: '/dev/xvda',
         volume: ec2.BlockDeviceVolume.ebs(20, {
