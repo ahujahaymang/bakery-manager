@@ -197,10 +197,25 @@ class ProductService:
         return self.update_product(tenant_id, product_name, recipe_id=recipe_id)
 
     def delete_product(self, tenant_id: UUID, name: str) -> bool:
-        """Delete a product and all its variants."""
+        """Delete a product and all its variants.
+
+        Also removes any booth_session_items referencing the product's variants,
+        since those are soft references (the booth sale is already recorded on the
+        order) and should not block catalog cleanup.
+        """
         product = self._get_by_name(tenant_id, name)
         if not product:
             raise ValueError(f"Product '{name}' not found")
+
+        # Remove booth session items that reference any of this product's variants
+        # before deleting the variants themselves to avoid FK constraint errors.
+        from app.models import BoothSessionItem
+        variant_ids = [v.variant_id for v in product.variants]
+        if variant_ids:
+            self.db.query(BoothSessionItem).filter(
+                BoothSessionItem.variant_id.in_(variant_ids)
+            ).delete(synchronize_session=False)
+
         self.db.delete(product)
         self.db.commit()
         return True

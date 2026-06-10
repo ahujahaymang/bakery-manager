@@ -8,7 +8,7 @@ class PaymentTools:
            {
                "order_identifier": str_prop("Customer name, phone, or order UUID"),
                "amount": num_prop(),
-               "method": enum_prop("Cash", "Paytm", "Bank Transfer"),
+               "method": enum_prop("Cash", "UPI", "GPay", "PhonePe", "Paytm", "Bank Transfer", "NEFT", "Cheque"),
            },
            required=["order_identifier", "amount", "method"]),
 

@@ -94,14 +94,21 @@ class PaymentService:
             )
         
         # Validate payment method
-        valid_methods = ["Cash", "Paytm", "Bank Transfer"]
+        valid_methods = ["Cash", "UPI", "GPay", "PhonePe", "Paytm", "Bank Transfer", "NEFT", "Cheque"]
         method = payment.method.strip()
-        
-        if method not in valid_methods:
+
+        # Case-insensitive match so "gpay", "upi" etc. work naturally
+        method_lower = method.lower()
+        matched = next(
+            (m for m in valid_methods if m.lower() == method_lower),
+            None
+        )
+        if not matched:
             raise ValueError(
                 f"Invalid payment method '{method}'. "
                 f"Valid methods are: {', '.join(valid_methods)}"
             )
+        method = matched  # normalise to canonical casing
         
         # Retrieve order by identifier and tenant_id
         # Try UUID first, then customer name/phone
