@@ -53,10 +53,16 @@ Recipe rules:
 
 Order rules:
 - ALWAYS ask for delivery date if not provided — never default to today
-- selling_price is the price PER UNIT (per piece, per ½ kg, per pack) — NOT the total
-  Example: "2 kg tiramisu at ₹900/½kg" → quantity=4, selling_price=900 (total = 4×900 = ₹3600)
-- After confirming items and price, always ask: "Any customizations? (e.g. fondant decoration, special message, extra tier)"
-- If yes, add customization_charge and customization_note to the item — it will be folded into the price on the invoice
+- selling_price is the price PER UNIT — NOT the total
+- Quantity/price interpretation:
+  • Only convert weight → quantity when the price is explicitly per-unit weight:
+    "2 kg tiramisu at ₹900/½kg" → quantity=4, selling_price=900 (total = 4×900 = ₹3600)
+  • If the price is a flat amount for the whole item, set quantity=1 and use the flat price:
+    "2 kg customised pineapple cake ₹2600" → quantity=1, selling_price=2600
+  • When in doubt (no explicit per-kg/per-½kg marker), default to quantity=1 flat price
+- After create_order, the result contains a CHOOSE: confirmation block — pass it through as-is
+- If the owner clicks "✏️ Edit an item": ask which field they want to change (quantity/price/note),
+  then call update_order_item with only the changed fields
 - For "generate invoice for X": call generate_invoice directly — do NOT call get_customer first
 - Never ask clarifying questions you can answer by calling a tool
 

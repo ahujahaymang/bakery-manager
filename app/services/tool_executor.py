@@ -318,25 +318,132 @@ class ToolExecutor:
                 delivery_address=args.get("delivery_address")
             )
         )
+
+        # Build a human-readable order summary for confirmation
         lines = [
-            f"Order created for delivery on {order.delivery_date}",
-            f"Status: {order.status}",
+            f"✅ Order saved for *{args['customer_identifier']}*",
+            f"📅 Delivery: {order.delivery_date}",
         ]
         if order.delivery_address:
-            lines.append(f"Delivery address: {order.delivery_address}")
-        lines.append("Items:")
+            lines.append(f"📍 {order.delivery_address}")
+        lines.append("")
+        lines.append("*Items:*")
+        total = Decimal("0")
         for item in items:
-            line = f"  {item.recipe_name} x{item.quantity} @ ₹{item.selling_price}"
+            unit_price = item.selling_price + (item.customization_charge or Decimal("0"))
+            item_total = unit_price * item.quantity
+            total += item_total
+            line = f"  • {item.recipe_name} × {item.quantity} @ ₹{item.selling_price}"
             if item.customization_charge and item.customization_charge > 0:
                 line += f" + ₹{item.customization_charge} customization"
-                if item.customization_note:
-                    line += f" ({item.customization_note})"
+            if item.customization_note:
+                line += f" ({item.customization_note})"
+            line += f" = ₹{item_total}"
             lines.append(line)
+        lines.append(f"\n💰 *Total: ₹{total}*")
 
         if hasattr(order, "_missing_recipes") and order._missing_recipes:
-            lines.append(f"\nNote: These recipes don't exist yet: {', '.join(order._missing_recipes)}")
+            lines.append(f"\n⚠️ Recipes not yet created: {', '.join(order._missing_recipes)}")
 
-        return "\n".join(lines)
+        summary = "\n".join(lines)
+
+        # Append a CHOOSE: confirmation block so owner can catch mis-parsed quantities
+        confirm_block = (
+            f"{summary}\n\n"
+            f"CHOOSE:Does this look right?\n"
+            f"✅ Looks good\n"
+            f"✏️ Edit an item"
+        )
+        return confirm_block
+
+    async def _tool_update_order_item(self, args):
+        """Edit a single item on an existing pending order."""
+        from app.models import OrderItem
+        finder = OrderFinder(self.db)
+        cust_svc = CustomerService(self.db)
+
+        customer_identifier = args["customer_identifier"]
+        recipe_name = args["recipe_name"]
+        delivery_date_str = args.get("delivery_date")
+
+        customers = cust_svc.get_customer(self.tenant_id, customer_identifier)
+        if not customers:
+            return f"No customer found matching '{customer_identifier}'"
+        if len(customers) > 1:
+            names = ", ".join(f"{c.name} ({c.phone})" for c in customers)
+            return f"Multiple customers match: {names}. Please be more specific."
+
+        customer = customers[0]
+
+        if delivery_date_str:
+            order = finder.find_by_customer_and_date(
+                self.tenant_id, customer.customer_id, date.fromisoformat(delivery_date_str)
+            )
+        else:
+            orders = finder.find_by_customer(
+                self.tenant_id, customer.customer_id, status_filter="pending"
+            )
+            if not orders:
+                return f"No pending orders found for {customer.name}"
+            if len(orders) > 1:
+                options = "\n".join(
+                    f"• {o.delivery_date}" for o in sorted(orders, key=lambda x: x.delivery_date)
+                )
+                return (
+                    f"CHOOSE:Multiple pending orders for {customer.name} — which one?\n"
+                    + "\n".join(
+                        str(o.delivery_date)
+                        for o in sorted(orders, key=lambda x: x.delivery_date)
+                    )
+                )
+            order = orders[0]
+
+        if not order:
+            return "Order not found"
+        if order.status == "delivered":
+            return "Cannot edit a delivered order"
+
+        # Find the matching order item (case-insensitive)
+        item = self.db.query(OrderItem).filter(
+            OrderItem.order_id == order.order_id,
+            OrderItem.recipe_name.ilike(f"%{recipe_name}%"),
+        ).first()
+        if not item:
+            all_items = self.db.query(OrderItem).filter(
+                OrderItem.order_id == order.order_id
+            ).all()
+            names = ", ".join(i.recipe_name for i in all_items)
+            return f"Item '{recipe_name}' not found in this order. Items: {names}"
+
+        # Apply updates
+        changes = []
+        if "quantity" in args and args["quantity"] is not None:
+            old_qty = item.quantity
+            item.quantity = int(args["quantity"])
+            changes.append(f"quantity {old_qty} → {item.quantity}")
+        if "selling_price" in args and args["selling_price"] is not None:
+            old_price = item.selling_price
+            item.selling_price = Decimal(str(args["selling_price"]))
+            changes.append(f"price ₹{old_price} → ₹{item.selling_price}")
+        if "customization_charge" in args and args["customization_charge"] is not None:
+            item.customization_charge = Decimal(str(args["customization_charge"]))
+            changes.append(f"customization charge → ₹{item.customization_charge}")
+        if "customization_note" in args and args["customization_note"] is not None:
+            item.customization_note = args["customization_note"]
+            changes.append(f"note → '{item.customization_note}'")
+
+        if not changes:
+            return "No changes specified."
+
+        self.db.commit()
+
+        unit_price = item.selling_price + (item.customization_charge or Decimal("0"))
+        new_total = unit_price * item.quantity
+        return (
+            f"✅ Updated *{item.recipe_name}* on {customer.name}'s order ({order.delivery_date}):\n"
+            + "\n".join(f"  • {c}" for c in changes)
+            + f"\n\nNew line total: ₹{new_total}"
+        )
 
     async def _tool_cancel_order(self, args):
         finder = OrderFinder(self.db)
