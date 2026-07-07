@@ -66,6 +66,15 @@ pip3.11 install -q -r "$NEW_DIR/requirements.txt"
 log "Copying .env from current deployment..."
 cp "$APP_DIR/.env" "$NEW_DIR/.env"
 
+# App-first: ensure the app-level HTTPS redirect is OFF behind nginx, which
+# already forces https (certbot --redirect). Left on, uvicorn behind the proxy
+# sees plain http on 127.0.0.1:8000 and 307-loops /app. Idempotent — only
+# append when the key is not already present.
+if ! grep -q '^ENABLE_HTTPS_REDIRECT=' "$NEW_DIR/.env"; then
+  echo 'ENABLE_HTTPS_REDIRECT=false' >> "$NEW_DIR/.env"
+  log "Added ENABLE_HTTPS_REDIRECT=false to .env (nginx handles the redirect)"
+fi
+
 # ── Step 5: Smoke test — does the app import cleanly? ────────────────────────
 log "Running smoke test..."
 cd "$NEW_DIR"
@@ -87,6 +96,17 @@ if ! python3.11 -m alembic upgrade head; then
   log "Migration FAILED — aborting deploy"
   rm -rf "$NEW_DIR"
   fail "Database migration failed. Deploy aborted. Production is unchanged."
+fi
+
+# App-first pivot migration: create the registry auth tables and add
+# orders.created_by_user_id per tenant. Required because `alembic upgrade` does
+# not create the SQLite app-first schema. Idempotent and additive, so it is
+# safe to re-run on every deploy.
+log "Running app-first migration (auth tables + attribution column)..."
+if ! python3.11 -m scripts.migrate_app_first; then
+  log "App-first migration FAILED — aborting deploy"
+  rm -rf "$NEW_DIR"
+  fail "App-first migration failed. Deploy aborted. Production is unchanged."
 fi
 
 # ── Step 7: Tag the current working deploy before swapping ───────────────────
