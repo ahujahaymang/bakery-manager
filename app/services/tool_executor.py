@@ -6,7 +6,7 @@ for the LLM to interpret and present to the user.
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any, Dict
 from uuid import UUID
@@ -1114,11 +1114,51 @@ class ToolExecutor:
 
     # ── Reporting ──────────────────────────────────────────────────────────
 
-    async def _tool_weekly_profit(self, args):
+    async def _tool_profit_report(self, args):
+        """
+        Report revenue, ingredient cost, packaging cost, and gross profit over a
+        date range.
+
+        ``start_date`` / ``end_date`` are optional YYYY-MM-DD strings:
+        - both omitted → last 30 days (end=today, start=today−29 days)
+        - only start given → end defaults to today
+        - only end given → start defaults to end−29 days
+        An unparseable date returns a short error string.
+        """
+        start_raw = (args.get("start_date") or "").strip()
+        end_raw = (args.get("end_date") or "").strip()
+
+        start_date = None
+        end_date = None
+        try:
+            if start_raw:
+                start_date = date.fromisoformat(start_raw)
+            if end_raw:
+                end_date = date.fromisoformat(end_raw)
+        except ValueError:
+            return (
+                "Error: dates must be in YYYY-MM-DD format "
+                f"(got start_date='{start_raw}', end_date='{end_raw}')."
+            )
+
+        # Resolve defaults
+        if start_date is None and end_date is None:
+            end_date = date.today()
+            start_date = end_date - timedelta(days=29)
+        elif start_date is None:
+            start_date = end_date - timedelta(days=29)
+        elif end_date is None:
+            end_date = date.today()
+
+        if start_date > end_date:
+            return (
+                f"Error: start date ({start_date}) is after end date ({end_date})."
+            )
+
         svc = ReportingService(self.db)
-        report = svc.calculate_weekly_profit(self.tenant_id)
+        report = svc.calculate_profit(self.tenant_id, start_date, end_date)
         return (
-            f"Week: {report.week_start} to {report.week_end}\n"
+            f"Period: {report.period_start} to {report.period_end}\n"
             f"Revenue: ₹{report.total_revenue:.2f}\n"
             f"Ingredient cost: ₹{report.total_ingredient_cost:.2f}\n"
             f"Packaging cost: ₹{report.total_packaging_cost:.2f}\n"

@@ -9,6 +9,7 @@ ensuring the right database is always used regardless of admin switching.
 """
 
 import logging
+import re
 from collections import defaultdict
 from contextlib import contextmanager
 from typing import Dict, List, Optional
@@ -25,6 +26,23 @@ logger = logging.getLogger(__name__)
 
 # Number of message turns kept in memory per conversation
 MAX_HISTORY = 8  # keep in sync with conversation_service.MAX_HISTORY
+
+# Phone normalization/validation — mirrors scripts/seed_owner_users.py and
+# AuthService: optional leading '+', 8–15 digits, after stripping separators.
+_PHONE_RE = re.compile(r"^\+?\d{8,15}$")
+_PHONE_STRIP_RE = re.compile(r"[\s\-().]")
+
+
+def _normalize_phone(value: str) -> str:
+    """Strip spaces and common separators, preserving a leading ``+``."""
+    if not value:
+        return ""
+    return _PHONE_STRIP_RE.sub("", value.strip())
+
+
+def _is_valid_phone(normalized: str) -> bool:
+    """Return whether ``normalized`` matches the accepted phone shape."""
+    return bool(_PHONE_RE.match(normalized))
 
 
 @contextmanager
@@ -81,6 +99,11 @@ class RequestHandler:
     _awaiting_business_name: Dict[str, bool] = {}
     # {chat_id: True} — waiting for country after business name
     _awaiting_country: Dict[str, bool] = {}
+    # {chat_id: True} — waiting for the sign-in phone number after country
+    _awaiting_phone: Dict[str, bool] = {}
+    # {chat_id: True} — existing owner being migrated to the app: waiting for the
+    # phone number they'll use to sign in (their data is already in their tenant DB)
+    _awaiting_app_phone: Dict[str, bool] = {}
 
     # ── History ────────────────────────────────────────────────────────────
 
@@ -241,9 +264,31 @@ class RequestHandler:
             # Owner said something else — fall through to normal text handling
 
         # Step 1: brand new user — no history, no business name set yet
-        if not self._get_history(chat_id) and chat_id not in self._awaiting_business_name:
+        if (
+            not self._get_history(chat_id)
+            and chat_id not in self._awaiting_business_name
+            and chat_id not in self._awaiting_app_phone
+        ):
             already_named = await self._get_business_name(tenant_id)
             if already_named:
+                # Existing owner. If they don't yet have an app sign-in, announce
+                # the new app and capture the phone to set up their login. Their
+                # products, customers, orders and invoices already live in their
+                # tenant DB, so the app is pre-populated the moment they sign in.
+                if not await self._has_owner_login(tenant_id):
+                    self._awaiting_app_phone[chat_id] = True
+                    prompt = (
+                        f"👋 Welcome back to *{already_named}*!\n\n"
+                        "🎉 Good news — we've launched a brand-new *app* for much "
+                        "easier navigation. Manage your sells, orders, inventory, "
+                        "recipes, customers and invoices from one simple screen, and "
+                        "everything you've already added is right there waiting for you.\n\n"
+                        "To set up your sign-in, *what phone number will you use to log in?*\n\n"
+                        "_(Include your country code, e.g. +91 98765 43210)_"
+                    )
+                    self._append(chat_id, "assistant", prompt)
+                    return prompt
+                # Already migrated — greet and continue to normal handling.
                 self._append(chat_id, "assistant", f"Welcome back, {already_named}!")
             else:
                 self._awaiting_business_name[chat_id] = True
@@ -257,9 +302,18 @@ class RequestHandler:
         if chat_id in self._awaiting_business_name:
             return await self._save_business_name(tenant_id, chat_id, text)
 
-        # Step 3: awaiting country — save it and show capabilities
+        # Step 3: awaiting country — save it and ask for the sign-in phone
         if chat_id in self._awaiting_country:
             return await self._complete_onboarding(tenant_id, chat_id, text)
+
+        # Step 4: awaiting sign-in phone — validate, create login, finish
+        if chat_id in self._awaiting_phone:
+            return await self._save_phone(tenant_id, chat_id, text)
+
+        # Existing owner being migrated to the app — validate the sign-in phone,
+        # create their Owner login (keeping their existing data), and send the link.
+        if chat_id in self._awaiting_app_phone:
+            return await self._save_app_phone(tenant_id, chat_id, text)
 
         # Subscription gate — check before running agent
         gate_response = await self._check_subscription(tenant_id, chat_id)
@@ -315,7 +369,14 @@ class RequestHandler:
     async def _complete_onboarding(
         self, tenant_id: UUID, chat_id: str, country: str
     ) -> str:
-        """Save country and show the welcome/capabilities message."""
+        """
+        Save country, then capture the sign-in phone number.
+
+        For WhatsApp tenants whose chat_id is already a valid phone we skip the
+        question and reuse it. Everyone else is asked which number they'll use
+        to sign in to the app; the finalisation (Owner user + trial + welcome)
+        happens in ``_finalize_onboarding`` once we have a valid phone.
+        """
         from app.services.tenant_service import TenantService
         from app.database import get_registry_db
 
@@ -324,26 +385,224 @@ class RequestHandler:
             svc = TenantService(reg_db)
             svc.set_country(tenant_id, country)
             tenant = svc.get_tenant_by_id(tenant_id)
-            business_name = tenant.business_name or "your business"
-            currency = TenantService.currency_for_country(country)
+            platform = (tenant.messaging_platform or "").lower() if tenant else ""
+            chat_phone = _normalize_phone(tenant.chat_id or "") if tenant else ""
         finally:
             reg_db.close()
 
         del self._awaiting_country[chat_id]
         self._append(chat_id, "user", country)
 
-        # Do NOT auto-start trial — admin must approve first
-        # Notify admin that a new user has completed onboarding
+        # WhatsApp tenants message from their phone — reuse it, skip the question.
+        if platform == "whatsapp" and _is_valid_phone(chat_phone):
+            return await self._finalize_onboarding(
+                tenant_id, chat_phone, chat_id=chat_id, auto_phone=True
+            )
+
+        # Otherwise ask which number they'll use to sign in.
+        self._awaiting_phone[chat_id] = True
+        prompt = (
+            "Almost done! *What phone number will you use to sign in to the app?*\n\n"
+            "_(Include your country code, e.g. +91 98765 43210)_"
+        )
+        self._append(chat_id, "assistant", prompt)
+        return prompt
+
+    async def _save_phone(self, tenant_id: UUID, chat_id: str, text: str) -> str:
+        """Validate the captured phone; re-ask on invalid, else finalise."""
+        normalized = _normalize_phone(text)
+        if not _is_valid_phone(normalized):
+            return (
+                "Hmm, that doesn't look like a valid phone number.\n\n"
+                "Please send it with your country code and digits only, "
+                "e.g. `+91 98765 43210`."
+            )
+
+        del self._awaiting_phone[chat_id]
+        self._append(chat_id, "user", text)
+        return await self._finalize_onboarding(
+            tenant_id, normalized, chat_id=chat_id
+        )
+
+    async def _finalize_onboarding(
+        self,
+        tenant_id: UUID,
+        phone: str,
+        *,
+        chat_id: Optional[str] = None,
+        auto_phone: bool = False,
+    ) -> str:
+        """
+        Complete onboarding: create the Owner login, start the trial, notify
+        admin, and return the welcome message with the PWA link.
+
+        Idempotent: an Owner ``User`` for (tenant_id, phone) is created only if
+        one does not already exist, respecting UniqueConstraint(tenant_id, phone).
+        Starting the trial replaces the old manual-approval gate; the admin
+        ``/approve`` and ``/trial`` commands remain available for overrides.
+        """
+        from sqlalchemy.exc import IntegrityError
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+        from app.auth.models_auth import User
+
+        phone = _normalize_phone(phone)
+
+        reg_db = next(get_registry_db())
+        try:
+            svc = TenantService(reg_db)
+            tenant = svc.get_tenant_by_id(tenant_id)
+            business_name = (tenant.business_name if tenant else None) or "your business"
+            country = (tenant.country if tenant else "") or ""
+            currency = TenantService.currency_for_country(country)
+
+            # Create the Owner login idempotently.
+            existing = (
+                reg_db.query(User)
+                .filter(User.tenant_id == tenant_id, User.phone == phone)
+                .first()
+            )
+            if not existing:
+                try:
+                    reg_db.add(
+                        User(
+                            tenant_id=tenant_id,
+                            name=business_name,
+                            phone=phone,
+                            role="owner",
+                        )
+                    )
+                    reg_db.commit()
+                except IntegrityError:
+                    # Concurrent/duplicate insert — safe to ignore (uq_user_tenant_phone).
+                    reg_db.rollback()
+
+            # Auto-start the 7-day trial (replaces manual approval gate).
+            svc.start_trial(tenant_id)
+            days = svc.days_remaining(tenant_id)
+        finally:
+            reg_db.close()
+
+        # Still notify the admin of the new signup.
         await self._notify_admin_new_signup(tenant_id, business_name, country)
 
+        days_text = f"{days} day{'s' if days != 1 else ''}" if days is not None else "7 days"
+        phone_line = (
+            f"We'll use *{phone}* (your WhatsApp number) to sign you in."
+            if auto_phone
+            else f"Sign in with this phone number: *{phone}*"
+        )
         welcome = (
             f"✅ *{business_name}* is registered!\n"
             f"Currency: *{currency}*\n\n"
-            "Your account is pending approval. You'll receive a message once your "
-            "free trial is activated — usually within a few hours."
+            f"🎉 Your *7-day free trial* is now active — {days_text} remaining.\n\n"
+            f"📱 [Open your app]({settings.APP_URL})\n\n"
+            "💡 Tip: add it to your home screen for one-tap access.\n\n"
+            f"{phone_line}\n"
+            "We'll text you a one-time code to log in."
         )
-        self._append(chat_id, "assistant", welcome)
+        if chat_id:
+            self._append(chat_id, "assistant", welcome)
         return welcome
+
+    async def _has_owner_login(self, tenant_id: UUID) -> bool:
+        """Return whether an Owner ``User`` (app sign-in) exists for the tenant."""
+        from app.auth.models_auth import User
+        from app.database import get_registry_db
+
+        reg_db = next(get_registry_db())
+        try:
+            return (
+                reg_db.query(User)
+                .filter(User.tenant_id == tenant_id, User.role == "owner")
+                .first()
+                is not None
+            )
+        except Exception:
+            # Fail open to "already has login" so we never spam the announcement
+            # on a transient registry error; the owner can still use the bot.
+            logger.warning("Could not check owner login for tenant %s", tenant_id)
+            return True
+        finally:
+            reg_db.close()
+
+    async def _save_app_phone(self, tenant_id: UUID, chat_id: str, text: str) -> str:
+        """Validate an existing owner's app sign-in phone; re-ask on invalid."""
+        normalized = _normalize_phone(text)
+        if not _is_valid_phone(normalized):
+            return (
+                "Hmm, that doesn't look like a valid phone number.\n\n"
+                "Please send it with your country code and digits only, "
+                "e.g. `+91 98765 43210`."
+            )
+
+        del self._awaiting_app_phone[chat_id]
+        self._append(chat_id, "user", text)
+        return await self._finalize_app_migration(tenant_id, normalized, chat_id=chat_id)
+
+    async def _finalize_app_migration(
+        self,
+        tenant_id: UUID,
+        phone: str,
+        *,
+        chat_id: Optional[str] = None,
+    ) -> str:
+        """
+        Set up app sign-in for an existing owner and return the app link.
+
+        Creates the Owner ``User`` for (tenant_id, phone) idempotently so OTP
+        sign-in resolves to the owner's existing tenant — every product,
+        customer, order and invoice they already have is immediately available
+        in the app. Unlike ``_finalize_onboarding`` this does NOT start or reset
+        the trial, since an existing owner already has a subscription state.
+        """
+        from sqlalchemy.exc import IntegrityError
+        from app.services.tenant_service import TenantService
+        from app.database import get_registry_db
+        from app.auth.models_auth import User
+
+        phone = _normalize_phone(phone)
+
+        reg_db = next(get_registry_db())
+        try:
+            svc = TenantService(reg_db)
+            tenant = svc.get_tenant_by_id(tenant_id)
+            business_name = (tenant.business_name if tenant else None) or "your business"
+
+            existing = (
+                reg_db.query(User)
+                .filter(User.tenant_id == tenant_id, User.phone == phone)
+                .first()
+            )
+            if not existing:
+                try:
+                    reg_db.add(
+                        User(
+                            tenant_id=tenant_id,
+                            name=business_name,
+                            phone=phone,
+                            role="owner",
+                        )
+                    )
+                    reg_db.commit()
+                except IntegrityError:
+                    # Concurrent/duplicate insert — safe to ignore (uq_user_tenant_phone).
+                    reg_db.rollback()
+        finally:
+            reg_db.close()
+
+        message = (
+            f"✅ You're all set, *{business_name}*!\n\n"
+            f"📱 [Open your new app]({settings.APP_URL})\n\n"
+            "💡 Tip: add it to your home screen for one-tap access.\n\n"
+            f"Sign in with this phone number: *{phone}*\n"
+            "We'll text you a one-time code to log in.\n\n"
+            "Everything you've already added — products, customers, orders and "
+            "invoices — is already inside, ready to go."
+        )
+        if chat_id:
+            self._append(chat_id, "assistant", message)
+        return message
 
     async def _notify_admin_new_signup(
         self, tenant_id: UUID, business_name: str, country: str
@@ -839,14 +1098,53 @@ class RequestHandler:
                 deleted_db = True
 
             # Remove from registry — use raw SQL on a fresh connection to avoid
-            # ORM cascade trying to load related tables that don't exist in tenants.db
+            # ORM cascade trying to load related tables that don't exist in tenants.db.
+            # The app-first auth tables have FKs into the tenant/user (users →
+            # tenants; devices/webauthn_credentials → users), and the registry
+            # runs with PRAGMA foreign_keys=ON, so dependents must be deleted
+            # first — otherwise the tenant DELETE fails with a FK constraint
+            # error. Only touch tables that actually exist (older registry DBs
+            # may predate the auth tables).
             import sqlalchemy as sa
             from app.database import get_registry_db as _get_reg
             fresh_db = next(_get_reg())
             try:
+                tid = str(tenant_id)
+                existing = {
+                    row[0]
+                    for row in fresh_db.execute(
+                        sa.text("SELECT name FROM sqlite_master WHERE type='table'")
+                    ).fetchall()
+                }
+                if {"otp_challenges", "users"} <= existing:
+                    fresh_db.execute(
+                        sa.text(
+                            "DELETE FROM otp_challenges WHERE phone IN "
+                            "(SELECT phone FROM users WHERE tenant_id = :tid)"
+                        ),
+                        {"tid": tid},
+                    )
+                if "devices" in existing:
+                    fresh_db.execute(
+                        sa.text("DELETE FROM devices WHERE tenant_id = :tid"),
+                        {"tid": tid},
+                    )
+                if {"webauthn_credentials", "users"} <= existing:
+                    fresh_db.execute(
+                        sa.text(
+                            "DELETE FROM webauthn_credentials WHERE user_id IN "
+                            "(SELECT user_id FROM users WHERE tenant_id = :tid)"
+                        ),
+                        {"tid": tid},
+                    )
+                if "users" in existing:
+                    fresh_db.execute(
+                        sa.text("DELETE FROM users WHERE tenant_id = :tid"),
+                        {"tid": tid},
+                    )
                 fresh_db.execute(
                     sa.text("DELETE FROM tenants WHERE tenant_id = :tid"),
-                    {"tid": str(tenant_id)}
+                    {"tid": tid},
                 )
                 fresh_db.commit()
             finally:
@@ -1140,8 +1438,8 @@ class RequestHandler:
             "_'Record ₹300 cash payment for Priya'_\n\n"
 
             "📊 *Reports*\n"
-            "• Weekly profit breakdown\n"
-            "_'Show this week\\'s profit'_\n\n"
+            "• Profit breakdown for any period — this week, last month, a custom range\n"
+            "_'Show last month\\'s profit'_\n\n"
 
             "📸 *Images*\n"
             "• Send a photo of a recipe, receipt, or order screenshot\n"

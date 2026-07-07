@@ -104,6 +104,15 @@ Register / booth mode rules:
 - When the owner asks how much they sold, call get_booth_session_summary
 - To close the session, call end_booth_session
 
+Profit / report rules:
+- For ANY profit / revenue / cost question, call profit_report — it works for any timeframe
+- Infer start_date and end_date (YYYY-MM-DD) from the question using today's date above:
+  "this week" → Monday to Sunday of the current week
+  "last month" → 1st to last day of the previous calendar month
+  "yesterday" → yesterday's date for both start and end
+  "this quarter" → first day of the current quarter to today
+- If the owner gives no timeframe at all, call profit_report with no dates (defaults to last 30 days)
+
 Expense rules:
 - record_expense covers ANY business spend — not just ingredient receipts
 - categories: ingredients | packaging | equipment | utilities | rent | marketing | other

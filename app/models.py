@@ -240,6 +240,12 @@ class Order(Base):
     status = Column(String, nullable=False, default="pending")  # "pending", "delivered", "cancelled"
     # NULL for regular chat orders; set for booth orders to link to the event session
     booth_session_id = Column(PortableUUID(), ForeignKey("booth_sessions.session_id"), nullable=True, index=True)
+    # Attribution (Req 7) — the authenticated app user who created this sale.
+    # References User.user_id in the registry DB. Intentionally NOT a DB-level FK,
+    # because User lives in a different database file under SQLite. Referential
+    # integrity is enforced in the application layer (the value always comes from
+    # an authenticated AuthedUser.user_id). NULL for pre-pivot / chat orders.
+    created_by_user_id = Column(PortableUUID(), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     
@@ -507,3 +513,23 @@ class PurchaseExpense(Base):
 
     # Relationships
     tenant = relationship("Tenant", back_populates="purchase_expenses")
+
+
+class SellIdempotency(Base):
+    """
+    Idempotency guard for the Sell surface — per-tenant business DB.
+
+    Maps a client-generated idempotency key to the order it created, so that
+    offline replays and retries result in at-most-once sale persistence
+    (Req 8.3, 18.5). On a duplicate key, the API returns the already-created
+    order (via order_id) instead of creating a second one.
+
+    Registry-independent: stored in the tenant's own business DB alongside the
+    Order it references.
+    """
+    __tablename__ = "sell_idempotency"
+
+    idempotency_key = Column(String, primary_key=True)           # client-generated per sale
+    tenant_id       = Column(PortableUUID(), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
+    order_id        = Column(PortableUUID(), nullable=False)
+    created_at      = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -31,49 +31,31 @@ class TenantService:
         """
         self.db = db
     
-    def get_or_create_tenant(self, chat_id: str) -> Tenant:
+    def get_or_create_tenant(self, chat_id: str, platform: str = "telegram") -> Tenant:
         """
         Get existing tenant or create new one for the given chat_id.
-        
-        This method implements automatic tenant onboarding. When a message
-        is received from an unknown chat_id, a new tenant is automatically
-        created with a generated UUID.
-        
+
         Args:
-            chat_id: Telegram chat_id (unique identifier for the chat)
-        
-        Returns:
-            Tenant: The existing or newly created tenant
-        
-        Raises:
-            ValueError: If chat_id is empty or invalid
-        
-        Requirements:
-            - 1.1: Create new Tenant record for unknown Chat_ID
-            - 1.2: Link Chat_ID to Tenant_ID
-            - 1.3: Store Tenant_ID as UUID
-            - 1.4: Store created_at and updated_at timestamps
-            - 19.2: Derive Tenant_ID from Chat_ID
-            - 19.4: Validate Tenant_ID exists
+            chat_id: Unique identifier for the chat (Telegram chat_id, WhatsApp phone number, etc.)
+            platform: "telegram" or "whatsapp" — stored on first creation only
         """
         if not chat_id or not chat_id.strip():
             raise ValueError("chat_id cannot be empty")
-        
-        # Try to get existing tenant
+
         tenant = self.get_tenant_by_chat_id(chat_id)
-        
         if tenant:
             return tenant
-        
-        # Create new tenant if not found
+
         try:
-            tenant = Tenant(chat_id=chat_id.strip())
+            tenant = Tenant(
+                chat_id=chat_id.strip(),
+                messaging_platform=platform,
+            )
             self.db.add(tenant)
             self.db.commit()
             self.db.refresh(tenant)
             return tenant
         except IntegrityError:
-            # Handle race condition where another process created the tenant
             self.db.rollback()
             tenant = self.get_tenant_by_chat_id(chat_id)
             if tenant:

@@ -55,11 +55,37 @@ class TelegramBotListener:
         self.application = None
         self.backup = create_backup_service()
 
+    async def _send_otp_message(self, chat_id: str, message: str) -> None:
+        """
+        Deliver an OTP over Telegram for the app-first ``/auth`` OTP path.
+
+        Registered into ``auth_router`` at startup so a known owner's sign-in
+        code is sent over their existing Telegram channel (Req 3.1). A direct
+        Bot API call (via httpx) is used rather than the python-telegram-bot
+        ``Application`` client because the webhook server runs in its own thread
+        and event loop; a fresh client bound to the caller's loop avoids
+        cross-loop errors. Raises on a non-2xx response so the tiered sender
+        records the attempt as failed and falls back to SMS.
+        """
+        import httpx
+
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                url, json={"chat_id": int(chat_id), "text": message}
+            )
+            resp.raise_for_status()
+
     def _start_webhook_server(self):
         """Start the FastAPI webhook server in a background thread."""
-        from app.webhook_server import app as webhook_app, register_instagram, register_booth
+        from app.webhook_server import app as webhook_app, register_instagram, register_booth, register_whatsapp, register_api
+        from app.api import auth_router
         register_instagram(self.instagram)
         register_booth()
+        register_whatsapp(self.handler, self.admin_notifier)
+        register_api()
+        # Let the app-first /auth OTP path deliver codes over Telegram (Req 3.1).
+        auth_router.set_telegram_otp_send(self._send_otp_message)
 
         import uvicorn
 

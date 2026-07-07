@@ -100,6 +100,26 @@ async def get_metrics(hours: int = 24, key: str = ""):
     return metrics.summary(window_hours=max(1, min(hours, 168)))
 
 
+def register_whatsapp(handler, admin_notifier=None):
+    """
+    Create and register the WhatsApp listener and its webhook routes.
+
+    Called from telegram_listener._start_webhook_server() at startup.
+    The WhatsAppListener is created here so telegram_listener stays
+    platform-agnostic — it only passes the shared RequestHandler.
+
+    No-op if WHATSAPP_TOKEN is not configured.
+    """
+    from app.whatsapp_listener import WhatsAppListener, create_whatsapp_router
+    wa = WhatsAppListener(handler=handler, admin_notifier=admin_notifier)
+    if not wa.enabled:
+        logger.info("WhatsApp not configured — set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID to enable")
+        return
+    router = create_whatsapp_router(wa)
+    app.include_router(router)
+    logger.info("WhatsApp webhook routes registered at /whatsapp/webhook")
+
+
 def register_instagram(instagram_listener):
     """
     Register Instagram webhook routes.
@@ -130,3 +150,118 @@ def register_booth():
     app.include_router(booth_alias)
     app.include_router(razorpay_router)
     logger.info("Register routes registered at /register/{tenant_id}")
+
+
+def _extend_cors_origins(origin: str) -> None:
+    """
+    Add ``origin`` to the existing CORSMiddleware ``allow_origins`` if missing.
+
+    register_api() runs at startup *before* the ASGI server builds the
+    middleware stack, so the middleware options can still be mutated safely.
+    Idempotent: re-adding an origin that is already allowed is a no-op.
+    """
+    if not origin:
+        return
+    for mw in app.user_middleware:
+        if mw.cls is CORSMiddleware:
+            origins = mw.kwargs.setdefault("allow_origins", [])
+            if origin not in origins:
+                origins.append(origin)
+            return
+
+
+def register_api():
+    """
+    Register the app-first REST API and the built PWA static bundle.
+
+    Called once at startup from telegram_listener alongside register_booth().
+
+    Scope (tasks 4.5 + 18.1):
+      - mount the auth router (``/api/v1/auth``) and every domain router
+        (sell, orders, inventory, recipes, customers, invoices, expenses,
+        insights, ingestion) — each declares its own ``/api/v1/...`` prefix
+        (Req 20.2, 20.4)
+      - mount the built PWA at ``/app`` from ``app/webapp_static/`` with SPA
+        fallback (``html=True``), mirroring the booth static mount
+      - extend CORS to the production origin (Req 20.2)
+      - add HTTPSRedirectMiddleware as defense-in-depth (Req 1.7, 1.8)
+
+    This is an additive mount: the Telegram poller, Instagram/WhatsApp webhooks
+    and the booth router are untouched, so disabling ``register_api()`` reverts
+    the system to chat+booth behavior.
+    """
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
+    from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+    from app.api.errors import register_error_handlers
+    from app.api import (
+        auth_router,
+        sell_router,
+        orders_router,
+        inventory_router,
+        recipes_router,
+        customers_router,
+        invoices_router,
+        expenses_router,
+        insights_router,
+        ingestion_router,
+    )
+
+    # Mount the auth router alongside every domain router. Each router already
+    # declares its own ``prefix="/api/v1/..."`` so no prefix is passed here.
+    for domain_router in (
+        auth_router,
+        sell_router,
+        orders_router,
+        inventory_router,
+        recipes_router,
+        customers_router,
+        invoices_router,
+        expenses_router,
+        insights_router,
+        ingestion_router,
+    ):
+        app.include_router(domain_router.router)
+
+    # Register the shared API exception handlers so typed APIError (and any
+    # uncaught service-layer ValueError) render as the designed JSON bodies
+    # (401/403/400/409/404/422/429/502) instead of a bare 500.
+    register_error_handlers(app)
+
+    # Allow the production origin the App is served from (defaults to
+    # https://kitchenos.info) so the PWA can call the Backend over HTTP(S)
+    # (Req 20.2).
+    _extend_cors_origins(settings.WEBAUTHN_ORIGIN)
+
+    # Defense-in-depth HTTPS enforcement (Req 1.7, 1.8). HTTP→HTTPS redirect is
+    # normally handled by the nginx layer; this middleware is a fallback. In
+    # production uvicorn honours X-Forwarded-Proto from nginx, so already-HTTPS
+    # requests proxied over HTTP are not redirected. Skippable for local HTTP
+    # dev via ENABLE_HTTPS_REDIRECT=false (defaults on so production is safe).
+    if settings.ENABLE_HTTPS_REDIRECT:
+        app.add_middleware(HTTPSRedirectMiddleware)
+    else:
+        logger.warning("HTTPSRedirectMiddleware disabled (ENABLE_HTTPS_REDIRECT=false) — local dev only")
+
+    # Serve the built PWA with SPA fallback to index.html. The bundle may not
+    # exist yet (frontend not built), so guard the mount to avoid crashing
+    # startup before the SPA has been built.
+    static_dir = Path(__file__).parent / "webapp_static"
+    if static_dir.is_dir():
+        app.mount(
+            "/app",
+            StaticFiles(directory=str(static_dir), html=True),
+            name="webapp",
+        )
+        logger.info("App PWA mounted at /app from %s", static_dir)
+    else:
+        logger.warning(
+            "webapp_static/ not found at %s — /app not mounted "
+            "(build the SPA to enable it)",
+            static_dir,
+        )
+
+    logger.info(
+        "App API registered under /api/v1 (auth, sell, orders, inventory, "
+        "recipes, customers, invoices, expenses, insights, ingestion)"
+    )

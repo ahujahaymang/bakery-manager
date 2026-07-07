@@ -14,6 +14,14 @@ bakery-ops-venv/
 venv/
 .venv/
 env/
+.kiro_venv/
+
+# Node / frontend deps (build output in app/webapp_static IS committed)
+node_modules/
+frontend/dist/
+
+# Hypothesis property-test cache
+.hypothesis/
 
 # Environment files
 .env

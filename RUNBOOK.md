@@ -321,3 +321,51 @@ cat /opt/kitchenos/.env
 cd /opt/kitchenos
 python3.11 -m app.telegram_listener
 ```
+
+---
+
+## Local end-to-end testing (App-First PWA + bot)
+
+Two local runners (neither touches production):
+
+- **Web only** (no Telegram bot):
+  ```bash
+  ENABLE_HTTPS_REDIRECT=false DB_ENGINE=sqlite SQLITE_PATH=./.kiro_tmp/localdb \
+  SMS_PROVIDER=stub AGENT_BACKEND=gpt python -m scripts.run_local
+  # open http://localhost:8000/app
+  ```
+- **Full stack** (Telegram bot + web + PWA) using the **dev** bot token:
+  ```bash
+  ENABLE_HTTPS_REDIRECT=false APP_URL=http://localhost:8000/app \
+  SMS_PROVIDER=stub AGENT_BACKEND=gpt DB_ENGINE=sqlite SQLITE_PATH=./data \
+  python -m scripts.run_local_bot
+  ```
+  Uses `TELEGRAM_BOT_DEV_TOKEN` (a separate @BotFather bot) — never the prod
+  token — so it can't conflict with the live bot (`getUpdates` 409) or
+  intercept real users. OTP over Telegram works with the dev bot; with
+  `SMS_PROVIDER=stub` the code is also logged to `.kiro_tmp/dev_bot.log`
+  (`grep '[SMS STUB]'`).
+
+Notes:
+- Rebuild the SPA after frontend changes: `cd frontend && npm run build`
+  (outputs to `app/webapp_static/`). Hard-reload / clear the service worker to
+  see changes.
+- A `localhost` app link is NOT openable from Telegram (Telegram tries to open
+  it on the device running Telegram). On the laptop, open
+  `http://localhost:8000/app` directly. A tappable Telegram link needs a public
+  URL (real domain / tunnel).
+
+## App-First PWA — production deploy prerequisites
+
+The PWA and app-first OTP need these to work behind the prod nginx+TLS setup:
+
+1. **Built PWA assets** — `app/webapp_static/` is committed to git, so
+   `deploy.sh` (which does not run `npm run build`) ships a working `/app`.
+   Rebuild + commit these whenever the frontend changes.
+2. **`ENABLE_HTTPS_REDIRECT=false` in the prod `.env`.** nginx (certbot
+   `--redirect`) already forces http→https. With the app-level redirect on,
+   uvicorn behind nginx sees plain http on `127.0.0.1:8000` and 307-loops
+   `/app`. Add `ENABLE_HTTPS_REDIRECT=false` to `/opt/kitchenos/.env`.
+3. `APP_URL` / `WEBAUTHN_RP_ID` / `WEBAUTHN_ORIGIN` default to
+   `kitchenos.info` (see `app/config.py`), which is correct for prod. Override
+   only if the domain changes.
