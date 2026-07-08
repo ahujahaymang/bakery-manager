@@ -497,7 +497,9 @@ class RequestHandler:
             f"Currency: *{currency}*\n\n"
             f"🎉 Your *7-day free trial* is now active — {days_text} remaining.\n\n"
             f"📱 [Open your app]({settings.APP_URL})\n\n"
-            "💡 Tip: add it to your home screen for one-tap access.\n\n"
+            "💡 For the best experience, open it in your phone's browser "
+            "(on iPhone: tap ••• → Open in Safari), then add it to your home "
+            "screen for one-tap access.\n\n"
             f"{phone_line}\n"
             "We'll text you a one-time code to log in."
         )
@@ -594,7 +596,9 @@ class RequestHandler:
         message = (
             f"✅ You're all set, *{business_name}*!\n\n"
             f"📱 [Open your new app]({settings.APP_URL})\n\n"
-            "💡 Tip: add it to your home screen for one-tap access.\n\n"
+            "💡 For the best experience, open it in your phone's browser "
+            "(on iPhone: tap ••• → Open in Safari), then add it to your home "
+            "screen for one-tap access.\n\n"
             f"Sign in with this phone number: *{phone}*\n"
             "We'll text you a one-time code to log in.\n\n"
             "Everything you've already added — products, customers, orders and "

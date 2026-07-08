@@ -1,15 +1,14 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { registerServiceWorker } from "./registerSW";
 
+// Service-worker registration is handled by vite-plugin-pwa's auto-injected
+// registerSW.js (registerType: "autoUpdate" in vite.config.ts). We deliberately
+// do NOT register a second time here: a duplicate registration caused a
+// spurious "offline capability unavailable" banner (a benign `redundant` event
+// during the duplicate/update) and extra work in constrained WebViews. Letting
+// the plugin own registration keeps a single, correct SW lifecycle.
 const container = document.getElementById("root");
 if (!container) {
   throw new Error("Root container #root not found");
 }
 createRoot(container).render(<App />);
-
-// Register the Workbox service worker on first load (Req 1.2). Registration is
-// best-effort and never blocks the app: if it fails, the app keeps running over
-// the network and surfaces an "offline capability unavailable" indication
-// (Req 1.3).
-void registerServiceWorker();
