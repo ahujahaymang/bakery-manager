@@ -90,23 +90,19 @@ print('Smoke test passed')
 fi
 
 # ── Step 6: Run database migrations ──────────────────────────────────────────
-log "Running database migrations..."
+# Single migration entrypoint: scripts/migrate_app_first.py. For SQLite it runs
+# create_all (registry auth tables) + the per-tenant ALTER sweep adding
+# orders.created_by_user_id; for Postgres it delegates to `alembic upgrade
+# head`. Do NOT run bare `alembic upgrade head` here — for the SQLite
+# multi-tenant layout SQLITE_PATH is a directory of per-tenant DB files (not a
+# single DB), so alembic fails with "unable to open database file". Idempotent
+# and additive, safe to re-run on every deploy.
+log "Running database migrations (app-first runner)..."
 cd "$NEW_DIR"
-if ! python3.11 -m alembic upgrade head; then
+if ! python3.11 -m scripts.migrate_app_first; then
   log "Migration FAILED — aborting deploy"
   rm -rf "$NEW_DIR"
   fail "Database migration failed. Deploy aborted. Production is unchanged."
-fi
-
-# App-first pivot migration: create the registry auth tables and add
-# orders.created_by_user_id per tenant. Required because `alembic upgrade` does
-# not create the SQLite app-first schema. Idempotent and additive, so it is
-# safe to re-run on every deploy.
-log "Running app-first migration (auth tables + attribution column)..."
-if ! python3.11 -m scripts.migrate_app_first; then
-  log "App-first migration FAILED — aborting deploy"
-  rm -rf "$NEW_DIR"
-  fail "App-first migration failed. Deploy aborted. Production is unchanged."
 fi
 
 # ── Step 7: Tag the current working deploy before swapping ───────────────────
